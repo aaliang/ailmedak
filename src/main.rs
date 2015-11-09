@@ -1,6 +1,6 @@
 extern crate ailmedak;
 
-use ailmedak::node::{KademliaNode, ASizedNode, Machine};
+use ailmedak::node::{KademliaNode, ASizedNode, AilmedakMachine, Machine};
 use std::env;
 
 fn main () {
@@ -14,7 +14,7 @@ fn main () {
                           .parse::<u16>()
                           .unwrap();
 
-    let machine = Machine {
+    let machine = AilmedakMachine {
         node: node
     };
 

@@ -1,6 +1,7 @@
 use rand::{thread_rng, Rng, Rand};
 use std::mem;
 use std::net::UdpSocket;
+use message_protocol::{BufferedUdp, DSocket};
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
@@ -84,21 +85,44 @@ impl KademliaNode {
     }
 }
 
-pub struct Machine <T> {
+pub struct AilmedakMachine <T> {
     pub node: T
+    //pub socket: S
+}
+
+pub trait Machine {
+    fn handle_incoming_message <M> (&mut self, message: M);
+    fn start (&self, port: u16);
 }
 
 use std::thread;
 use std::sync::mpsc::channel;
 
-impl <T> Machine <T> {
-    pub fn start (&self, port: u16) {
+impl <T> AilmedakMachine <T> {
+    pub fn new (node: T) -> AilmedakMachine <T> {
+        AilmedakMachine {
+            node: node
+        }
+    }
+}
+
+impl <T> Machine for AilmedakMachine <T> {
+    fn handle_incoming_message <M> (&mut self, message: M) {
+    }
+
+    fn start (&self, port: u16) {
         let t = thread::spawn(move|| {
-            let mut listen = UdpSocket::bind(("0.0.0.0", port)).unwrap();
+            let mut socket = match UdpSocket::bind(("0.0.0.0", port)) {
+                Ok(a) => a,
+                _ => panic!("unable to bind")
+            };
+            let mut receiver = BufferedUdp::new(socket.try_clone().unwrap());
             loop {
-                let mut buf:[u8; 512] = [0; 512];
-                let (num_read, addr) = listen.recv_from(&mut buf).unwrap();
-                println!("{:?}", &buf[..]);
+                let x = receiver.wait_for_message();
+
+
+
+                //println!("{:?}", &buf[..num_read]);
                 /*
                 // Send a reply to the socket we received data from
                 let buf = &mut buf[..amt];
@@ -108,5 +132,11 @@ impl <T> Machine <T> {
         });
 
         t.join();
+    }
+}
+
+trait UdpConnector {
+    fn handle (&self, port: u16) {
+        
     }
 }
