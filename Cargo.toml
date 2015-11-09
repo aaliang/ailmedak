@@ -6,4 +6,11 @@ authors = ["aliang <aliang2344@gmail.com>"]
 [dependencies]
 rand = "0.3"
 rust-crypto = "0.2"
-zmq = "0.7"
+
+[[bin]]
+name = "main"
+path = "src/main.rs"
+
+[[bin]]
+name = "x"
+path = "src/x.rs"

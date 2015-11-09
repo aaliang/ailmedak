@@ -12,10 +12,18 @@ pub enum Message <K, V>{
 const KEYSIZE:usize = 20;
 const MIN_MSG_SIZE:usize = 4;
 
-pub type Key = Vec<u8>;
+pub type Key = [u8; 20];
 pub type Value = Vec<u8>;
 
-pub fn try_decode (bytes: &[u8], keysize: &usize) -> Option<(Message<Key, Value>, usize)> {
+fn key_cpy (key_addr: &[u8]) -> Key {
+    let mut key: Key = [0; 20];
+    for (a, b) in key_addr.iter().zip(key.iter_mut()) {
+        *b = *a;
+    }
+    key
+}
+
+pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key, Value>, usize)> {
     let rest = &bytes[4..];
     match u8_4_to_u32(&bytes[0..4]) as usize {
         0 => Some((Message::Ping, 4)),
@@ -27,12 +35,13 @@ pub fn try_decode (bytes: &[u8], keysize: &usize) -> Option<(Message<Key, Value>
             let message = match *message_type {
                 _ if len > rest.len() => return None, //the entire envelope is not here yet
                 1 => {
-                    let key = &rest[1..*keysize+1];
+                    let key_addr = &rest[1..*keysize+1];
+                    let key = key_cpy(key_addr);
                     let value = &rest[*keysize+1..len];
-                    Message::Store(key.to_owned(), value.to_owned())
+                    Message::Store(key, value.to_owned())
                 },
-                2 => Message::FindNode((&rest[1..len]).to_owned()),
-                3 => Message::FindVal((&rest[1..len]).to_owned()),
+                2 => Message::FindNode(key_cpy(&rest[1..len])),
+                3 => Message::FindVal(key_cpy(&rest[1..len])),
                 _ => return None
             };
 
