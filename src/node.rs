@@ -1,7 +1,7 @@
 use rand::{thread_rng, Rng, Rand};
 use std::mem;
 use std::net::UdpSocket;
-use message_protocol::{BufferedUdp, DSocket};
+use message_protocol::{DSocket};
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
@@ -116,9 +116,14 @@ impl <T> Machine for AilmedakMachine <T> {
                 Ok(a) => a,
                 _ => panic!("unable to bind")
             };
-            let mut receiver = BufferedUdp::new(socket.try_clone().unwrap());
+            let mut receiver = socket.try_clone().unwrap();
             loop {
-                let x = receiver.wait_for_message();
+                match receiver.wait_for_message() {
+                    Ok(a) => {
+                        println!("msg {:?}", a);
+                    },
+                    _ => {}
+                };
 
 
 

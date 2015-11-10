@@ -1,12 +1,52 @@
 use std::net::UdpSocket;
 use std::io::Result;
 use std::io::{Error, ErrorKind};
+use std::mem::transmute;
+use std::mem;
 
+#[derive(Debug)]
 pub enum Message <K, V>{
     Ping,
     Store(K, V),
     FindNode(K),
     FindVal(K)
+}
+
+pub fn ping_msg () -> [u8; 4] {
+    [0; 4]
+}
+
+pub fn store_msg (key: &[u8; 20], val: &[u8]) -> Vec<u8> {
+    let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
+    let bytes: [u8; 4] = unsafe { transmute(((1+ key.len() + val.len()) as u32).to_be()) };
+    vec.extend(bytes.iter());
+    vec.push(1);
+    vec.extend(key.iter().chain(val.iter()));
+    vec
+}
+
+pub fn find_node_msg (key: &[u8; 20]) -> [u8; 20 + 5] {
+    let mut ret:[u8; 25] = unsafe{mem::uninitialized()};
+    let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
+
+    //what the hell is this lol... maybe make this sane someday
+    for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([2].iter()).chain(key.iter())) {
+        *x = *y;
+    }
+
+    ret
+}
+
+pub fn find_val_msg (key: &[u8; 20]) -> [u8; 20 + 5] {
+    let mut ret:[u8; 25] = unsafe{mem::uninitialized()};
+    let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
+
+    //what the hell is this
+    for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([3].iter()).chain(key.iter())) {
+        *x = *y;
+    }
+
+    ret
 }
 
 const KEYSIZE:usize = 20;
@@ -16,7 +56,7 @@ pub type Key = [u8; 20];
 pub type Value = Vec<u8>;
 
 fn key_cpy (key_addr: &[u8]) -> Key {
-    let mut key: Key = [0; 20];
+    let mut key: Key = [0; 20]; //for now hardcode... later use macros
     for (a, b) in key_addr.iter().zip(key.iter_mut()) {
         *b = *a;
     }
@@ -61,49 +101,27 @@ fn u8_4_to_u32 (bytes: &[u8]) -> u32 {
         | ((bytes[1] as u32) << 16)
         | ((bytes[0] as u32) << 24))
 }
-
-pub struct BufferedUdp {
-    socket: UdpSocket,
-    buffer: Vec<u8>
-}
-
-impl BufferedUdp {
-    pub fn new (socket: UdpSocket) -> BufferedUdp {
-        BufferedUdp {
-            socket: socket,
-            buffer: Vec::new()
-        }
-    }
-}
-
 pub trait DSocket {
     fn wait_for_message (&mut self) -> Result<Message<Key, Value>>;
 }
 
-impl DSocket for BufferedUdp {
+use std::thread;
+
+impl DSocket for UdpSocket {
     fn wait_for_message (&mut self) -> Result<Message<Key, Value>> {
-        //eventually try to go heapless unless last resort.
         loop {
-            let mut ibuf:[u8; 256] = [0; 256];
-            match self.socket.recv_from(&mut ibuf) {
-                Ok((0, _)) => {
-                    return Err(Error::new(ErrorKind::Other, "graceful disconnect"))
-                }
+            let mut ibuf:[u8; 4096] = unsafe {mem::uninitialized()};
+            match self.recv_from(&mut ibuf) {
+                Ok((0, _)) => return Err(Error::new(ErrorKind::Other, "graceful disconnect")),
                 Ok((num_read, addr)) => {
-                    self.buffer.extend(ibuf[0..num_read].iter());
-                    if self.buffer.len() >= MIN_MSG_SIZE {
-                        match try_decode(&self.buffer, &KEYSIZE) {
-                            None => continue,
-                            Some((msg, bytes_consumed)) => {
-                                //TOOD: make this zero copy
-                                self.buffer = (&self.buffer[bytes_consumed..]).to_owned();
-                                return Ok(msg)
-                            }
-                        };
+                    println!("{:?}", &ibuf[0..num_read]);
+                    match try_decode(&ibuf[0..num_read], &KEYSIZE) {
+                        None => continue,
+                        Some((msg, _)) => return Ok(msg)
                     }
                 },
                 Err(err) => return Err(err)
-            };
-         }
+            }
+        }
     }
 }
