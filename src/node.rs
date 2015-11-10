@@ -1,7 +1,7 @@
 use rand::{thread_rng, Rng, Rand};
 use std::mem;
 use std::net::UdpSocket;
-use message_protocol::{DSocket};
+use message_protocol::{DSocket, Message, Key, Value};
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
@@ -91,12 +91,12 @@ pub struct AilmedakMachine <T> {
 }
 
 pub trait Machine {
-    fn handle_incoming_message <M> (&mut self, message: M);
-    fn start (&self, port: u16);
+    fn start (&mut self, port: u16);
 }
 
 use std::thread;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{Sender, Receiver, channel};
+
 
 impl <T> AilmedakMachine <T> {
     pub fn new (node: T) -> AilmedakMachine <T> {
@@ -106,42 +106,46 @@ impl <T> AilmedakMachine <T> {
     }
 }
 
-impl <T> Machine for AilmedakMachine <T> {
-    fn handle_incoming_message <M> (&mut self, message: M) {
+struct State;
+impl State {
+    fn receive (&mut self, msg: Message<Key, Value>) {
+        match msg {
+            _ => {
+                println!("msg");
+            }
+        }
     }
+}
 
-    fn start (&self, port: u16) {
-        let t = thread::spawn(move|| {
-            let mut socket = match UdpSocket::bind(("0.0.0.0", port)) {
-                Ok(a) => a,
-                _ => panic!("unable to bind")
-            };
+
+impl <T> Machine for AilmedakMachine <T> where T:Sync {
+    fn start (&mut self, port: u16) {
+        let (tx, rx) = channel();
+
+        let mut socket = match UdpSocket::bind(("0.0.0.0", port)) {
+            Ok(a) => a,
+            _ => panic!("unable to bind")
+        };
+
+        let reader = thread::spawn(move|| {
             let mut receiver = socket.try_clone().unwrap();
             loop {
                 match receiver.wait_for_message() {
-                    Ok(a) => {
-                        println!("msg {:?}", a);
-                    },
-                    _ => {}
+                    Ok(a) => {tx.send(a);},
+                    _ => ()
                 };
-
-
-
-                //println!("{:?}", &buf[..num_read]);
-                /*
-                // Send a reply to the socket we received data from
-                let buf = &mut buf[..amt];
-                buf.reverse();
-                try!(listen.send_to(buf, &src));*/
             }
         });
 
-        t.join();
+        let state_thread = thread::spawn(move|| {
+            loop {
+                let message = rx.recv().unwrap();
+                println!("got {:?}", message);
+            }
+        });
+
+        reader.join();
     }
 }
 
-trait UdpConnector {
-    fn handle (&self, port: u16) {
-        
-    }
-}
+

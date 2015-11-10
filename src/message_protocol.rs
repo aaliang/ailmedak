@@ -1,4 +1,6 @@
 use std::net::UdpSocket;
+use std::net::SocketAddr;
+//use std::net::SocketAddrV4;
 use std::io::Result;
 use std::io::{Error, ErrorKind};
 use std::mem::transmute;
@@ -102,13 +104,13 @@ fn u8_4_to_u32 (bytes: &[u8]) -> u32 {
         | ((bytes[0] as u32) << 24))
 }
 pub trait DSocket {
-    fn wait_for_message (&mut self) -> Result<Message<Key, Value>>;
+    fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, SocketAddr)>;
 }
 
 use std::thread;
 
 impl DSocket for UdpSocket {
-    fn wait_for_message (&mut self) -> Result<Message<Key, Value>> {
+    fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, SocketAddr)> {
         loop {
             let mut ibuf:[u8; 4096] = unsafe {mem::uninitialized()};
             match self.recv_from(&mut ibuf) {
@@ -117,7 +119,7 @@ impl DSocket for UdpSocket {
                     println!("{:?}", &ibuf[0..num_read]);
                     match try_decode(&ibuf[0..num_read], &KEYSIZE) {
                         None => continue,
-                        Some((msg, _)) => return Ok(msg)
+                        Some((msg, _)) => return Ok((msg, addr))
                     }
                 },
                 Err(err) => return Err(err)

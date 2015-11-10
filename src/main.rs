@@ -14,7 +14,7 @@ fn main () {
                           .parse::<u16>()
                           .unwrap();
 
-    let machine = AilmedakMachine {
+    let mut machine = AilmedakMachine {
         node: node
     };
 
