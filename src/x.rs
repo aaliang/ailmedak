@@ -14,6 +14,7 @@ fn main () {
                                  .parse::<u16>()
                                  .unwrap();
 
+    //let id = [255, 164, 237, 35, 202, 140, 149, 147, 86, 65, 224, 50, 236, 44, 179, 183, 114, 54, 239, 55];
     let mut machine = AilmedakMachine::new(port);
 
     println!("{:?}", machine.id());
