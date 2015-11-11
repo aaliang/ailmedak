@@ -1,6 +1,4 @@
-use std::net::UdpSocket;
-use std::net::SocketAddr;
-//use std::net::SocketAddrV4;
+use std::net::{UdpSocket, SocketAddr};
 use std::io::Result;
 use std::io::{Error, ErrorKind};
 use std::mem::transmute;
@@ -14,42 +12,54 @@ pub enum Message <K, V>{
     FindVal(K)
 }
 
-pub fn ping_msg () -> [u8; 4] {
-    [0; 4]
-}
+pub trait ProtoMessage {
+    fn id (&self) -> &Key;
 
-pub fn store_msg (key: &[u8; 20], val: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
-    let bytes: [u8; 4] = unsafe { transmute(((1+ key.len() + val.len()) as u32).to_be()) };
-    vec.extend(bytes.iter());
-    vec.push(1);
-    vec.extend(key.iter().chain(val.iter()));
-    vec
-}
-
-pub fn find_node_msg (key: &[u8; 20]) -> [u8; 20 + 5] {
-    let mut ret:[u8; 25] = unsafe{mem::uninitialized()};
-    let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
-
-    //what the hell is this lol... maybe make this sane someday
-    for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([2].iter()).chain(key.iter())) {
-        *x = *y;
+    //yeah these can be done with partially applied functions instead... too late
+    fn ping_msg (&self) -> [u8; 4 + 20] {
+        let mut bytes: [u8; 24] = unsafe { mem::uninitialized()};
+        for (x, y) in &mut bytes.iter_mut().zip([0; 4].iter().chain(self.id().iter())) {
+            *x = *y;
+        }
+        bytes
     }
 
-    ret
-}
-
-pub fn find_val_msg (key: &[u8; 20]) -> [u8; 20 + 5] {
-    let mut ret:[u8; 25] = unsafe{mem::uninitialized()};
-    let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
-
-    //what the hell is this
-    for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([3].iter()).chain(key.iter())) {
-        *x = *y;
+    fn store_msg (&self, key: &[u8; 20], val: &[u8]) -> Vec<u8> {
+        let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
+        let bytes: [u8; 4] = unsafe { transmute(((1+ key.len() + val.len()) as u32).to_be()) };
+        vec.extend(bytes.iter());
+        vec.push(1);
+        vec.extend(key.iter().chain(val.iter()));
+        vec.extend(self.id().iter());
+        vec
     }
 
-    ret
+    fn find_node_msg (&self, key: &[u8; 20]) -> [u8; 20*2 + 5] {
+        let mut ret:[u8; 45] = unsafe{mem::uninitialized()};
+        let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
+
+        //what the hell is this lol... maybe make this sane someday
+        for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([2].iter()).chain(key.iter()).chain(self.id().iter())) {
+            *x = *y;
+        }
+
+        ret
+    }
+
+    fn find_val_msg (&self, key: &[u8; 20]) -> [u8; 20*2 + 5] {
+        let mut ret:[u8; 45] = unsafe{mem::uninitialized()};
+        let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
+
+        //what the hell is this
+        for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([3].iter()).chain(key.iter()).chain(self.id().iter())) {
+            *x = *y;
+        }
+
+        ret
+    }
+
 }
+
 
 const KEYSIZE:usize = 20;
 const MIN_MSG_SIZE:usize = 4;
@@ -65,10 +75,15 @@ fn key_cpy (key_addr: &[u8]) -> Key {
     key
 }
 
-pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key, Value>, usize)> {
+
+//this is actually possible without any copies at all (even on the stack)
+//for now do it this way
+pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key, Value>, Key)> {
     let rest = &bytes[4..];
-    match u8_4_to_u32(&bytes[0..4]) as usize {
-        0 => Some((Message::Ping, 4)),
+
+    println!("len: {}", bytes.len());
+    let (some_msg, len) = match u8_4_to_u32(&bytes[0..4]) as usize {
+        0 => (Message::Ping, 4),
         len => { //len is inclusive of the id byte
             let message_type = match rest.first() {
                 None => return None,
@@ -86,10 +101,15 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
                 3 => Message::FindVal(key_cpy(&rest[1..len])),
                 _ => return None
             };
-
-            Some((message, len + 4))
+            //let from_id = (&bytes[len+4..len+4+keysize]);
+            (message, len + 4)
         }
-    }
+    };
+
+    println!("l: {}", len);
+    println!("x");
+    let from_id = key_cpy(&bytes[len..len+keysize]);
+    Some((some_msg, from_id))
 }
 
 //this is relatively unsafe
@@ -104,13 +124,13 @@ fn u8_4_to_u32 (bytes: &[u8]) -> u32 {
         | ((bytes[0] as u32) << 24))
 }
 pub trait DSocket {
-    fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, SocketAddr)>;
+    fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, Key, SocketAddr)>;
 }
 
 use std::thread;
 
 impl DSocket for UdpSocket {
-    fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, SocketAddr)> {
+    fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, Key, SocketAddr)> {
         loop {
             let mut ibuf:[u8; 4096] = unsafe {mem::uninitialized()};
             match self.recv_from(&mut ibuf) {
@@ -119,7 +139,7 @@ impl DSocket for UdpSocket {
                     println!("{:?}", &ibuf[0..num_read]);
                     match try_decode(&ibuf[0..num_read], &KEYSIZE) {
                         None => continue,
-                        Some((msg, _)) => return Ok((msg, addr))
+                        Some((msg, from_id)) => return Ok((msg, from_id, addr))
                     }
                 },
                 Err(err) => return Err(err)

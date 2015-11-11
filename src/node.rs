@@ -1,7 +1,7 @@
 use rand::{thread_rng, Rng, Rand};
 use std::mem;
-use std::net::UdpSocket;
-use message_protocol::{DSocket, Message, Key, Value};
+use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
+use message_protocol::{DSocket, Message, Key, Value, ProtoMessage};
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
@@ -9,6 +9,7 @@ macro_rules! addr_spc { () => { 20 } }
 macro_rules! meta_node {
     ($name: ident (id_len = $length: expr)) => {
         pub trait $name <T> where T: PartialEq + PartialOrd + Rand {
+
             fn my_id (&self) -> &[T; $length];
             fn dist_as_bytes (a: &[T; $length], b: &[T; $length]) -> [T; $length];
             fn gen_new_id () -> [T; $length] {
@@ -44,11 +45,11 @@ macro_rules! meta_k_bucket {
     }
 }
 
-type NodeAddr = [u8; addr_spc!()];
+pub type NodeAddr = [u8; addr_spc!()];
 type BucketArray = [Vec<NodeAddr>; addr_spc!() * 8];
 
 meta_node!(ASizedNode (id_len = addr_spc!()));
-meta_k_bucket!(BigBucket<NodeAddr> (k = 50) );
+//meta_k_bucket!(BigBucket<NodeAddr> (k = 50) );
 
 pub struct KademliaNode {
     addr_id: NodeAddr,
@@ -70,7 +71,7 @@ impl ASizedNode<u8> for KademliaNode {
 }
 
 impl KademliaNode {
-    pub fn new (k_val: usize) -> KademliaNode {
+    pub fn new (id: NodeAddr, k_val: usize) -> KademliaNode {
         let mut buckets:BucketArray = unsafe {mem::uninitialized()};
 
         for i in buckets.iter_mut() {
@@ -78,16 +79,17 @@ impl KademliaNode {
         }
 
         KademliaNode {
-            addr_id: Self::gen_new_id(),
+            addr_id: id,
             buckets: buckets,
             k_val: k_val
         }
     }
 }
 
-pub struct AilmedakMachine <T> {
-    pub node: T
-    //pub socket: S
+pub struct AilmedakMachine {
+    //pub node: T,
+    socket: UdpSocket,
+    id: NodeAddr
 }
 
 pub trait Machine {
@@ -95,20 +97,21 @@ pub trait Machine {
 }
 
 use std::thread;
+use std::thread::JoinHandle;
 use std::sync::mpsc::{Sender, Receiver, channel};
-
-
-impl <T> AilmedakMachine <T> {
-    pub fn new (node: T) -> AilmedakMachine <T> {
-        AilmedakMachine {
-            node: node
-        }
-    }
-}
 
 struct State;
 impl State {
-    fn receive (&mut self, msg: Message<Key, Value>) {
+    fn new () -> State {
+        State
+    }
+    fn update_k_buckets() {
+    }
+
+    fn k_bucket_for(&self, k: &Key) {
+    }
+
+    fn receive (&mut self, msg: &Message<Key, Value>) {
         match msg {
             _ => {
                 println!("msg");
@@ -117,18 +120,33 @@ impl State {
     }
 }
 
-
-impl <T> Machine for AilmedakMachine <T> where T:Sync {
-    fn start (&mut self, port: u16) {
-        let (tx, rx) = channel();
+impl AilmedakMachine {
+    pub fn new(port: u16) -> AilmedakMachine {
+        let id = KademliaNode::gen_new_id();
 
         let mut socket = match UdpSocket::bind(("0.0.0.0", port)) {
             Ok(a) => a,
             _ => panic!("unable to bind")
         };
 
+        AilmedakMachine {
+            socket: socket,
+            id: id
+            //node: node
+        }
+    }
+
+    pub fn init_state (&self, k_val: usize) -> KademliaNode {
+        KademliaNode::new(self.id.clone(), k_val)
+    }
+
+    /// blocks
+    pub fn start (&self) {
+        let state = self.init_state(50);
+
+        let mut receiver = self.socket.try_clone().unwrap();
+        let (tx, rx) = channel();
         let reader = thread::spawn(move|| {
-            let mut receiver = socket.try_clone().unwrap();
             loop {
                 match receiver.wait_for_message() {
                     Ok(a) => {tx.send(a);},
@@ -139,7 +157,58 @@ impl <T> Machine for AilmedakMachine <T> where T:Sync {
 
         let state_thread = thread::spawn(move|| {
             loop {
-                let message = rx.recv().unwrap();
+                //let x_id = self.my_id();
+                let (ref message, ref node_id, ref addr) = rx.recv().unwrap();
+                println!("addr: {:?}", addr);
+                println!("node: {:?}", state.addr_id);
+                //let x = state.k_bucket_for(node_id);
+                //let id = self.node.id();
+                //state.update_k_buckets(addr);
+                //state.receive(message);
+                println!("got {:?}", message);
+            }
+        });
+
+        //this is temporary
+        reader.join();
+    }
+
+    pub fn send_msg <A:ToSocketAddrs> (&mut self, msg: &[u8], addr: A) {
+        self.socket.send_to(msg, addr);
+    }
+}
+
+impl ProtoMessage for AilmedakMachine {
+    fn id (&self) -> &NodeAddr {
+        &self.id
+    }
+}
+
+
+/*impl <T> Machine for AilmedakMachine <T> where T:Sync {
+    fn start (&mut self, port: u16) {
+        let mut socket = match UdpSocket::bind(("0.0.0.0", port)) {
+            Ok(a) => a,
+            _ => panic!("unable to bind")
+        };
+        let (tx, rx) = channel();
+        let reader = thread::spawn(move|| {
+            let mut receiver = socket.try_clone().unwrap();
+            loop {
+                match receiver.wait_for_message() {
+                    Ok(a) => {tx.send(a);},
+                    _ => ()
+                };
+            }
+        });
+        let state_thread = thread::spawn(move|| {
+            let mut state = State::new();
+            loop {
+                let (ref message, ref addr) = rx.recv().unwrap();
+                println!("addr: {:?}", addr);
+                //let x = state.k_bucket_for(addr);
+                //state.update_k_buckets(addr);
+                state.receive(message);
                 println!("got {:?}", message);
             }
         });
@@ -147,5 +216,5 @@ impl <T> Machine for AilmedakMachine <T> where T:Sync {
         reader.join();
     }
 }
-
+*/
 

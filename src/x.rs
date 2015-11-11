@@ -1,22 +1,31 @@
 extern crate ailmedak;
 
-use ailmedak::node::{KademliaNode, ASizedNode, Machine};
-use ailmedak::message_protocol::{ping_msg, store_msg, find_val_msg, find_node_msg};
+use ailmedak::node::{KademliaNode, ASizedNode, Machine, AilmedakMachine};
+use ailmedak::message_protocol::ProtoMessage;
 use std::env;
 use std::mem;
 use std::net::UdpSocket;
 
 fn main () {
 
-    let mut get = UdpSocket::bind(("0.0.0.0", 5556)).unwrap();
+    //let node = KademliaNode::new(50);
+
+    let port = env::args().nth(1).unwrap()
+                                 .parse::<u16>()
+                                 .unwrap();
+
+    let mut machine = AilmedakMachine::new(port);
+
+    println!("{:?}", machine.id());
+
+
 
     let key:[u8; 20] = [5; 20];
     let val:[u8; 100] = unsafe {mem::uninitialized()};
 
-    //let msg = store_msg(&key, &val);
-    let msg = find_node_msg(&key);
-    println!("{:?}", msg);
-    let num_sent = get.send_to(&msg, ("0.0.0.0", 5557)).unwrap();
+    let remote = ("0.0.0.0", 5557);
+    let msg = machine.find_node_msg(&key);
+    println!("{:?}", &msg[..]);
+    machine.send_msg(&msg, ("0.0.0.0", 5557));
 
-    println!("{}", num_sent);
 }
