@@ -1,10 +1,11 @@
 extern crate ailmedak;
 
 use ailmedak::node::{KademliaNode, ASizedNode, Machine, AilmedakMachine};
-use ailmedak::message_protocol::ProtoMessage;
+use ailmedak::message_protocol::{ProtoMessage, u16_to_u8_2};
 use std::env;
 use std::mem;
 use std::net::UdpSocket;
+
 
 fn main () {
     let port = env::args().nth(1).unwrap()
@@ -33,7 +34,13 @@ fn main () {
     //let msg = machine.find_node_msg(&key);
     //let msg = machine.ping_ack();
     //let msg = machine.find_val_msg(&[3; 20]);
+    let o_id = [255, 164, 237, 35, 202, 140, 149, 147, 86, 65, 224, 50, 236, 44, 179, 183, 114, 54, 239, 55];
+    //let AilmedakMachine::gen_new_id();
     let msg = machine.find_val_resp(&[3;20], &[1;30]);
+
+    let msg = machine.find_node_resp(&(vec![
+        (o_id, ([100, 100, 200, 200], u16_to_u8_2(&3000))),
+        ]), &key);
     println!("msg out {:?}", &msg[..]);
     machine.send_msg(&msg, ("0.0.0.0", 5557));
 

@@ -13,7 +13,7 @@ pub enum Message <K, V>{
     FindVal(K),
     //acks
     PingResp,
-    FindNodeResp(K, Vec<SocketAddr>),
+    FindNodeResp(K, Vec<(K, [u8; 4], u16)>),
     FindValResp(K, V)
 }
 
@@ -65,7 +65,6 @@ pub trait ProtoMessage {
         bytes
     }
 
-
     fn store_msg (&self, key: &Key, val: &[u8]) -> Vec<u8> {
         let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
         let payload_size = (key.len() + val.len()) as u32;
@@ -101,20 +100,21 @@ pub trait ProtoMessage {
         ret
     }
 
-    fn find_node_resp (&self, closest: &Vec<Key>, key: &Key) -> Vec<u8> {
-        let payload_size = mem::size_of::<Key>() * closest.len();
+    fn find_node_resp (&self, closest: &Vec<(Key, ([u8; 4], [u8; 2]))>, key: &Key) -> Vec<u8> {
+        let payload_size = (mem::size_of::<Key>() + 6) * closest.len();
+        println!("psize {}", payload_size);
+        println!("klen: {}", key.len());
         let mut vec = Vec::with_capacity(payload_size + key.len() + 5 + 20);
-        let bytes: [u8; 4] = unsafe {transmute((payload_size + 1) as u32 )};
-
+        let bytes: [u8; 4] = unsafe {transmute(((payload_size + key.len()) as u32 ).to_be())};
         vec.extend(
             [5].iter().chain(self.id().iter())
                       .chain(bytes.iter())
                       .chain(key.iter()));
-        vec.extend(closest.iter().flat_map(|a| a.iter()).map(|b| *b));
+        vec.extend(closest.iter().flat_map(|&(ref a, (ref b, ref c))| {
+            a.iter().chain(b.iter()).chain(c.iter())
+        }).map(|b| *b));
         vec
     }
-
-
 
     fn find_val_resp (&self, key: &[u8; 20], val: &[u8]) -> Vec<u8> {
         let pure_payload = key.len() + val.len();
@@ -146,6 +146,14 @@ fn key_cpy (key_addr: &[u8]) -> Key {
     key
 }
 
+fn ip_cpy (key_addr: &[u8]) -> [u8; 4] {
+    let mut key:[u8; 4] = [0; 4]; //for now hardcode... later use macros
+    for (a, b) in key_addr.iter().zip(key.iter_mut()) {
+        *b = *a;
+    }
+    key
+}
+
 //this is actually possible without any copies at all (even on the stack)
 //for now do it this way
 pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key, Value>, Key)> {
@@ -160,14 +168,18 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
                 2 => Message::Store(key_cpy(&rest[0..*keysize]), (&rest[*keysize..]).to_owned()),
                 3 => Message::FindNode(key_cpy(&rest[0..])),
                 4 => Message::FindVal(key_cpy(&rest[0..])),
-                5 => {
-                    println!("TODO: unhandled");
-                    /*let okey = key_cpy(&rest[0..*keysize]);
+                5 => { 
+                    let key = key_cpy(&rest[0..*keysize]);
+                    let nfield = &rest[*keysize..];
                     let num_returned = (len-keysize)/keysize;
-                    (0..num_returned).map(|x| {
-                        
-                    }).collect::<Vec<SocketAddr>>()*/
-                    return None
+                    let result_vec = (0..num_returned).map(|n| {
+                        let section = &nfield[n * (*keysize + 6)..];
+                        let node_id = key_cpy(&section[0..*keysize]);
+                        let ip_addr = ip_cpy(&section[*keysize..*keysize+4]);
+                        let port = u8_2_to_u16(&section[*keysize+4..*keysize+6]);
+                        (node_id, ip_addr, port)
+                    }).collect::<Vec<([u8; 20], [u8; 4], u16)>>();
+                    Message::FindNodeResp(key, result_vec)
                 },
                 6 => Message::FindValResp(key_cpy(&rest[0..*keysize]), (&rest[*keysize..]).to_owned()),
                 _ => return None
@@ -218,15 +230,19 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
 }*/
 
 //this is relatively unsafe
-fn u8_2_to_u16 (bytes: &[u8]) -> u16 {
+pub fn u8_2_to_u16 (bytes: &[u8]) -> u16 {
     (bytes[1] as u16 | (bytes[0] as u16) << 8)
 }
 
-fn u8_4_to_u32 (bytes: &[u8]) -> u32 {
+pub fn u8_4_to_u32 (bytes: &[u8]) -> u32 {
     (bytes[3] as u32
         | ((bytes[2] as u32) << 8)
         | ((bytes[1] as u32) << 16)
         | ((bytes[0] as u32) << 24))
+}
+
+pub fn u16_to_u8_2 (n: &u16) -> [u8; 2]{
+    unsafe{mem::transmute((*n).to_be())}
 }
 pub trait DSocket {
     fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, Key, SocketAddr)>;
