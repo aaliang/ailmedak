@@ -23,12 +23,18 @@ fn main () {
         }
     };
 
+    println!("id is {:?}", machine.id());
+
     let key:[u8; 20] = [5; 20];
     let val:[u8; 100] = unsafe {mem::uninitialized()};
 
     let remote = ("0.0.0.0", 5557);
-    let msg = machine.find_node_msg(&key);
-    println!("{:?}", &msg[..]);
+
+    //let msg = machine.find_node_msg(&key);
+    //let msg = machine.ping_ack();
+    //let msg = machine.find_val_msg(&[3; 20]);
+    let msg = machine.find_val_resp(&[3;20], &[1;30]);
+    println!("msg out {:?}", &msg[..]);
     machine.send_msg(&msg, ("0.0.0.0", 5557));
 
 }

@@ -13,46 +13,89 @@ pub enum Message <K, V>{
     FindVal(K),
     //acks
     PingResp,
-    FindNodeResp(Vec<SocketAddr>, K),
+    FindNodeResp(K, Vec<SocketAddr>),
     FindValResp(K, V)
 }
+
+/*macro_rules! byte_envelope {
+    (
+        $len:expr,
+        $(
+            $x:expr,
+         ),*
+    ) => {{
+        let mut bytes: [u8; $len] = unsafe {mem::uninitialized()};
+        for (x, y) in &mut bytes.iter_mut().zip(rec_env!($($x),*)) {
+            *x = *y;
+        }
+        //[$($x),*]
+        bytes
+    }};
+}
+
+macro_rules! rec_env {
+    ($head:expr,) => ();
+    (
+        $head:expr, $($x:expr),*
+    ) => {{
+        $head.iter().chain(byte_envelope!($($x),*))
+    }};
+}*/
 
 pub trait ProtoMessage {
     fn id (&self) -> &Key;
 
     //yeah these can be done with partially applied functions instead... too late
-    fn ping_msg (&self) -> [u8; 4 + 20] {
-        let mut bytes: [u8; 24] = unsafe { mem::uninitialized()};
-        for (x, y) in &mut bytes.iter_mut().zip([0; 4].iter().chain(self.id().iter())) {
+    fn ping_msg (&self) -> [u8; 1 + 20] {
+        let mut bytes: [u8; 21] = unsafe { mem::uninitialized()};
+        //[0, + id] (21 bytes)
+        for (x, y) in &mut bytes.iter_mut().zip(
+            [0].iter().chain(self.id().iter())) {
             *x = *y;
         }
         bytes
     }
 
-    fn ping_ack (&self) -> [u8; 5 + 20] {
-        let mut bytes: [u8; 25] = unsafe {mem::uninitialized()};
-        for (x, y) in &mut bytes.iter_mut().zip([0, 0, 0, 1, 4].iter().chain(self.id().iter())) {
+    fn ping_ack (&self) -> [u8; 1 + 20] {
+        let mut bytes: [u8; 21] = unsafe {mem::uninitialized()};
+        for (x, y) in &mut bytes.iter_mut().zip(
+            [1].iter().chain(self.id().iter())) {
             *x = *y;
         }
         bytes
     }
+
 
     fn store_msg (&self, key: &Key, val: &[u8]) -> Vec<u8> {
         let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
-        let bytes: [u8; 4] = unsafe { transmute(((1+ key.len() + val.len()) as u32).to_be()) };
-        vec.extend(bytes.iter());
-        vec.push(1);
-        vec.extend(key.iter().chain(val.iter()));
-        vec.extend(self.id().iter());
+        let payload_size = (key.len() + val.len()) as u32;
+        let num_payload: [u8; 4] = unsafe { transmute(payload_size.to_be())};
+        vec.extend([2].iter().chain(self.id().iter())
+                      .chain(key.iter())
+                      .chain(val.iter()));
         vec
     }
 
-    fn find_node_msg (&self, key: &Key) -> [u8; 20*2 + 5] {
-        let mut ret:[u8; 45] = unsafe{mem::uninitialized()};
-        let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
+    fn find_node_msg (&self, key: &Key) -> [u8; 1+20+4+20] {
+        let mut ret:[u8; 45] = unsafe { mem::uninitialized()};
+        let len:[u8; 4] = unsafe { transmute(((key.len()) as u32).to_be())};
 
         //what the hell is this lol... maybe make this sane someday
-        for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([2].iter()).chain(key.iter()).chain(self.id().iter())) {
+        for (x, y) in &mut ret.iter_mut().zip([3].iter().chain(self.id().iter())
+                                                        .chain(len.iter())
+                                                        .chain(key.iter())) {
+            *x = *y;
+        }
+        ret
+    }
+
+    fn find_val_msg (&self, key: &[u8; 20]) -> [u8; 1+20+4+20] {
+        let mut ret:[u8; 45] = unsafe { mem::uninitialized()};
+        let len:[u8; 4] = unsafe { transmute(((key.len()) as u32).to_be())};
+        //what the hell is this lol... maybe make this sane someday
+        for (x, y) in &mut ret.iter_mut().zip([4].iter().chain(self.id().iter())
+                                                        .chain(len.iter())
+                                                        .chain(key.iter())) {
             *x = *y;
         }
         ret
@@ -63,35 +106,26 @@ pub trait ProtoMessage {
         let mut vec = Vec::with_capacity(payload_size + key.len() + 5 + 20);
         let bytes: [u8; 4] = unsafe {transmute((payload_size + 1) as u32 )};
 
-        vec.extend(bytes.iter()
-                        .chain([5].iter()));
-
+        vec.extend(
+            [5].iter().chain(self.id().iter())
+                      .chain(bytes.iter())
+                      .chain(key.iter()));
         vec.extend(closest.iter().flat_map(|a| a.iter()).map(|b| *b));
-        vec.extend(self.id().iter());
         vec
     }
 
-    fn find_val_msg (&self, key: &[u8; 20]) -> [u8; 20*2 + 5] {
-        let mut ret:[u8; 45] = unsafe{mem::uninitialized()};
-        let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
 
-        //what the hell is this
-        for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([3].iter()).chain(key.iter()).chain(self.id().iter())) {
-            *x = *y;
-        }
-
-        ret
-    }
 
     fn find_val_resp (&self, key: &[u8; 20], val: &[u8]) -> Vec<u8> {
         let pure_payload = key.len() + val.len();
         let mut vec:Vec<u8> = Vec::with_capacity(pure_payload + 5 + 20);
-        let len:[u8; 4] = unsafe { transmute(((1 + key.len() + val.len()) as u32).to_be())};
-        vec.extend(len.iter());
-        vec.extend([6].iter());
-        vec.extend(key.iter());
-        vec.extend(val.iter());
-        vec.extend(self.id().iter());
+        let len:[u8; 4] = unsafe { transmute(((key.len() + val.len()) as u32).to_be())};
+
+        vec.extend(
+            [6].iter().chain(self.id().iter())
+                      .chain(len.iter())
+                      .chain(key.iter())
+                      .chain(val.iter()));
         vec
     }
 
@@ -112,12 +146,43 @@ fn key_cpy (key_addr: &[u8]) -> Key {
     key
 }
 
+//this is actually possible without any copies at all (even on the stack)
+//for now do it this way
+pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key, Value>, Key)> {
+    let node_id = key_cpy(&bytes[1..keysize+1]);
+    let some_msg = match *(bytes.first().unwrap()) {
+        0 => Message::Ping,
+        1 => Message::PingResp,
+        x => {
+            let len = u8_4_to_u32(&bytes[keysize+1..keysize+5]) as usize;
+            let rest = &bytes[keysize+5..];
+            match x {
+                2 => Message::Store(key_cpy(&rest[0..*keysize]), (&rest[*keysize..]).to_owned()),
+                3 => Message::FindNode(key_cpy(&rest[0..])),
+                4 => Message::FindVal(key_cpy(&rest[0..])),
+                5 => {
+                    println!("TODO: unhandled");
+                    /*let okey = key_cpy(&rest[0..*keysize]);
+                    let num_returned = (len-keysize)/keysize;
+                    (0..num_returned).map(|x| {
+                        
+                    }).collect::<Vec<SocketAddr>>()*/
+                    return None
+                },
+                6 => Message::FindValResp(key_cpy(&rest[0..*keysize]), (&rest[*keysize..]).to_owned()),
+                _ => return None
+            }
+        }
+    };
 
+    Some((some_msg, node_id))
+}
+
+/*
 //this is actually possible without any copies at all (even on the stack)
 //for now do it this way
 pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key, Value>, Key)> {
     let rest = &bytes[4..];
-
     println!("len: {}", bytes.len());
     let (some_msg, len) = match u8_4_to_u32(&bytes[0..4]) as usize {
         0 => (Message::Ping, 4),
@@ -150,7 +215,7 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
     println!("x");
     let from_id = key_cpy(&bytes[len..len+keysize]);
     Some((some_msg, from_id))
-}
+}*/
 
 //this is relatively unsafe
 fn u8_2_to_u16 (bytes: &[u8]) -> u16 {
