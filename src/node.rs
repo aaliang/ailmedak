@@ -49,7 +49,7 @@ macro_rules! meta_k_bucket {
 }
 
 pub type NodeAddr = [u8; addr_spc!()];
-type BucketArray = [Vec<NodeAddr>; addr_spc!() * 8 + 1];
+type BucketArray = [Vec<(NodeAddr, SocketAddr)>; addr_spc!() * 8 + 1];
 
 meta_node!(ASizedNode (id_len = addr_spc!()));
 //meta_k_bucket!(BigBucket<NodeAddr> (k = 50) );
@@ -87,6 +87,34 @@ impl KademliaNode {
             k_val: k_val
         }
     }
+
+    pub fn k_bucket_index (distance: &NodeAddr) -> usize {
+        let x = distance.iter().enumerate().find(|&(i, byte_val)| {
+            *byte_val != 0
+        });
+        match x {
+            Some ((index, val)) => {
+                let push_macro = 8 * (distance.len() - index - 1);
+                let push_micro = 8 - (val.leading_zeros() as usize) - 1;
+                let comb_push = push_macro + push_micro;
+                comb_push
+            },
+            _ => 0
+        }
+    }
+
+    pub fn update_k_bucket (&mut self, k_index: usize, tup: (NodeAddr, SocketAddr)) {
+        let (node_id, sock_addr) = tup;
+        let mut k_bucket = &mut self.buckets[k_index];
+        k_bucket.retain(|&(n, _)| node_id != n);
+
+        if k_bucket.len() < self.k_val {
+            k_bucket.push(tup);
+        } else {
+            //TODO: need to ping
+            println!("TODO: NEED TO HANDLE PING");
+        }
+    }
 }
 
 pub struct AilmedakMachine {
@@ -121,7 +149,6 @@ impl State {
         }
     }
 }
-
 impl AilmedakMachine {
 
     pub fn with_id(port: u16, id: NodeAddr) -> AilmedakMachine {
@@ -129,7 +156,6 @@ impl AilmedakMachine {
             Ok(a) => a,
             _ => panic!("unable to bind")
         };
-
         AilmedakMachine {
             socket: socket,
             id: id
@@ -144,25 +170,9 @@ impl AilmedakMachine {
         KademliaNode::new(self.id.clone(), k_val)
     }
 
-    pub fn k_bucket_index (distance: &Key) -> usize {
-        let x = distance.iter().enumerate().find(|&(i, byte_val)| {
-            *byte_val != 0
-        });
-
-        match x {
-            Some ((index, val)) => {
-                let push_macro = 8 * (distance.len() - index - 1);
-                let push_micro = 8 - (val.leading_zeros() as usize) - 1;
-                let comb_push = push_macro + push_micro;
-                comb_push
-            },
-            _ => 0
-        }
-    }
-
     /// blocks
     pub fn start (&self) {
-        let state = self.init_state(50);
+        let mut state = self.init_state(50);
 
         let mut receiver = self.socket.try_clone().unwrap();
         let (tx, rx) = channel();
@@ -178,20 +188,15 @@ impl AilmedakMachine {
         let state_thread = thread::spawn(move|| {
             loop {
                 //let x_id = self.my_id();
-                let (ref message, ref node_id, ref addr) = rx.recv().unwrap();
+                let (message, node_id, addr) = rx.recv().unwrap();
                 println!("addr: {:?}", addr);
                 println!("them: {:?}", node_id); 
                 println!("us: {:?}", state.my_id());
 
-                let diff = state.distance_to(node_id);
-                let k_index = Self::k_bucket_index(&diff);
-                println!("kindex: {}", k_index);
+                let diff = state.distance_to(&node_id);
+                let k_index = KademliaNode::k_bucket_index(&diff);
+                state.update_k_bucket(k_index, (node_id, addr));
                 println!("diff: {:?}", &diff[..]);
-
-                //let x = state.k_bucket_for(node_id);
-                //let id = self.node.id();
-                //state.update_k_buckets(addr);
-                //state.receive(message);
                 println!("got {:?}", message);
             }
         });
