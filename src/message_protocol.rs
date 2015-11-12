@@ -6,10 +6,15 @@ use std::mem;
 
 #[derive(Debug)]
 pub enum Message <K, V>{
+    //out
     Ping,
     Store(K, V),
     FindNode(K),
-    FindVal(K)
+    FindVal(K),
+    //acks
+    PingResp,
+    FindNodeResp(Vec<SocketAddr>, K),
+    FindValResp(K, V)
 }
 
 pub trait ProtoMessage {
@@ -24,7 +29,15 @@ pub trait ProtoMessage {
         bytes
     }
 
-    fn store_msg (&self, key: &[u8; 20], val: &[u8]) -> Vec<u8> {
+    fn ping_ack (&self) -> [u8; 5 + 20] {
+        let mut bytes: [u8; 25] = unsafe {mem::uninitialized()};
+        for (x, y) in &mut bytes.iter_mut().zip([0, 0, 0, 1, 4].iter().chain(self.id().iter())) {
+            *x = *y;
+        }
+        bytes
+    }
+
+    fn store_msg (&self, key: &Key, val: &[u8]) -> Vec<u8> {
         let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
         let bytes: [u8; 4] = unsafe { transmute(((1+ key.len() + val.len()) as u32).to_be()) };
         vec.extend(bytes.iter());
@@ -34,7 +47,7 @@ pub trait ProtoMessage {
         vec
     }
 
-    fn find_node_msg (&self, key: &[u8; 20]) -> [u8; 20*2 + 5] {
+    fn find_node_msg (&self, key: &Key) -> [u8; 20*2 + 5] {
         let mut ret:[u8; 45] = unsafe{mem::uninitialized()};
         let len:[u8; 4] = unsafe { transmute(((1 + key.len()) as u32).to_be())};
 
@@ -42,8 +55,20 @@ pub trait ProtoMessage {
         for (x, y) in &mut ret.iter_mut().zip(len.iter().chain([2].iter()).chain(key.iter()).chain(self.id().iter())) {
             *x = *y;
         }
-
         ret
+    }
+
+    fn find_node_resp (&self, closest: &Vec<Key>, key: &Key) -> Vec<u8> {
+        let payload_size = mem::size_of::<Key>() * closest.len();
+        let mut vec = Vec::with_capacity(payload_size + key.len() + 5 + 20);
+        let bytes: [u8; 4] = unsafe {transmute((payload_size + 1) as u32 )};
+
+        vec.extend(bytes.iter()
+                        .chain([5].iter()));
+
+        vec.extend(closest.iter().flat_map(|a| a.iter()).map(|b| *b));
+        vec.extend(self.id().iter());
+        vec
     }
 
     fn find_val_msg (&self, key: &[u8; 20]) -> [u8; 20*2 + 5] {
@@ -56,6 +81,18 @@ pub trait ProtoMessage {
         }
 
         ret
+    }
+
+    fn find_val_resp (&self, key: &[u8; 20], val: &[u8]) -> Vec<u8> {
+        let pure_payload = key.len() + val.len();
+        let mut vec:Vec<u8> = Vec::with_capacity(pure_payload + 5 + 20);
+        let len:[u8; 4] = unsafe { transmute(((1 + key.len() + val.len()) as u32).to_be())};
+        vec.extend(len.iter());
+        vec.extend([6].iter());
+        vec.extend(key.iter());
+        vec.extend(val.iter());
+        vec.extend(self.id().iter());
+        vec
     }
 
 }
@@ -99,6 +136,9 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
                 },
                 2 => Message::FindNode(key_cpy(&rest[1..len])),
                 3 => Message::FindVal(key_cpy(&rest[1..len])),
+                4 => Message::PingResp,
+                5 => Message::PingResp, //TODO: not PingResp its FindNodeResp
+                6 => Message::PingResp, //TODO: not PingResp its FindValResp
                 _ => return None
             };
             //let from_id = (&bytes[len+4..len+4+keysize]);

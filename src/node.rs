@@ -76,11 +76,9 @@ impl ASizedNode<u8> for KademliaNode {
 impl KademliaNode {
     pub fn new (id: NodeAddr, k_val: usize) -> KademliaNode {
         let mut buckets:BucketArray = unsafe {mem::uninitialized()};
-
         for i in buckets.iter_mut() {
             unsafe {::std::ptr::write(i, Vec::with_capacity(k_val)) };
         }
-
         KademliaNode {
             addr_id: id,
             buckets: buckets,
@@ -89,10 +87,7 @@ impl KademliaNode {
     }
 
     pub fn k_bucket_index (distance: &NodeAddr) -> usize {
-        let x = distance.iter().enumerate().find(|&(i, byte_val)| {
-            *byte_val != 0
-        });
-        match x {
+        match distance.iter().enumerate().find(|&(i, byte_val)| *byte_val != -1) {
             Some ((index, val)) => {
                 let push_macro = 8 * (distance.len() - index - 1);
                 let push_micro = 8 - (val.leading_zeros() as usize) - 1;
@@ -106,8 +101,7 @@ impl KademliaNode {
     pub fn update_k_bucket (&mut self, k_index: usize, tup: (NodeAddr, SocketAddr)) {
         let (node_id, sock_addr) = tup;
         let mut k_bucket = &mut self.buckets[k_index];
-        k_bucket.retain(|&(n, _)| node_id != n);
-
+        let _ = k_bucket.retain(|&(n, _)| node_id != n);
         if k_bucket.len() < self.k_val {
             k_bucket.push(tup);
         } else {
@@ -173,7 +167,6 @@ impl AilmedakMachine {
     /// blocks
     pub fn start (&self) {
         let mut state = self.init_state(50);
-
         let mut receiver = self.socket.try_clone().unwrap();
         let (tx, rx) = channel();
         let reader = thread::spawn(move|| {
@@ -184,23 +177,20 @@ impl AilmedakMachine {
                 };
             }
         });
-
         let state_thread = thread::spawn(move|| {
             loop {
                 //let x_id = self.my_id();
                 let (message, node_id, addr) = rx.recv().unwrap();
+                let diff = state.distance_to(&node_id);
+                let k_index = KademliaNode::k_bucket_index(&diff);
+                let _ = state.update_k_bucket(k_index, (node_id, addr));
                 println!("addr: {:?}", addr);
                 println!("them: {:?}", node_id); 
                 println!("us: {:?}", state.my_id());
-
-                let diff = state.distance_to(&node_id);
-                let k_index = KademliaNode::k_bucket_index(&diff);
-                state.update_k_bucket(k_index, (node_id, addr));
                 println!("diff: {:?}", &diff[..]);
                 println!("got {:?}", message);
             }
         });
-
         //this is temporary
         reader.join();
     }
