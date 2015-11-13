@@ -1,6 +1,7 @@
 use rand::{thread_rng, Rng, Rand};
 use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
+use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage};
 
 //the size of address space, in bytes
@@ -52,12 +53,13 @@ pub type NodeAddr = [u8; addr_spc!()];
 type BucketArray = [Vec<(NodeAddr, SocketAddr)>; addr_spc!() * 8 + 1];
 
 meta_node!(ASizedNode (id_len = addr_spc!()));
-//meta_k_bucket!(BigBucket<NodeAddr> (k = 50) );
 
+//TODO: this should be genericized
 pub struct KademliaNode {
     addr_id: NodeAddr,
     buckets: BucketArray,
-    k_val: usize
+    k_val: usize,
+    data: HashMap<Key, Value>
 }
 
 impl ASizedNode<u8> for KademliaNode {
@@ -82,7 +84,8 @@ impl KademliaNode {
         KademliaNode {
             addr_id: id,
             buckets: buckets,
-            k_val: k_val
+            k_val: k_val,
+            data: HashMap::new()
         }
     }
 
@@ -109,6 +112,27 @@ impl KademliaNode {
             println!("TODO: NEED TO HANDLE PING");
         }
     }
+
+    pub fn locate_node (&self, node_id: &NodeAddr) {
+        let diff = self.distance_to(&node_id);
+        let k_index = Self::k_bucket_index(&diff);
+    }
+
+    fn receive (&mut self, msg: Message<Key, Value>) {
+        match msg {
+            Message::FindNode(key) => {
+                let diff = self.distance_to(&key);
+                let k_index = Self::k_bucket_index(&diff);
+                println!("fi: {}", k_index);
+            },
+            Message::Store(key, val) => {
+                self.data.insert(key, val);
+            },
+            _ => {
+                //println!("msg"); 
+            }
+        }
+    }
 }
 
 pub struct AilmedakMachine {
@@ -124,25 +148,6 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::sync::mpsc::{Sender, Receiver, channel};
 
-struct State;
-impl State {
-    fn new () -> State {
-        State
-    }
-    fn update_k_buckets() {
-    }
-
-    fn k_bucket_for(&self, k: &Key) {
-    }
-
-    fn receive (&mut self, msg: &Message<Key, Value>) {
-        match msg {
-            _ => {
-                println!("msg");
-            }
-        }
-    }
-}
 impl AilmedakMachine {
 
     pub fn with_id(port: u16, id: NodeAddr) -> AilmedakMachine {
@@ -179,7 +184,6 @@ impl AilmedakMachine {
         });
         let state_thread = thread::spawn(move|| {
             loop {
-                //let x_id = self.my_id();
                 let (message, node_id, addr) = rx.recv().unwrap();
                 let diff = state.distance_to(&node_id);
                 let k_index = KademliaNode::k_bucket_index(&diff);
@@ -189,8 +193,11 @@ impl AilmedakMachine {
                 println!("us: {:?}", state.my_id());
                 println!("diff: {:?}", &diff[..]);
                 println!("got {:?}", message);
+                let _ = state.receive(message);
             }
         });
+
+        //main thread handles api requests
         //this is temporary
         reader.join();
     }

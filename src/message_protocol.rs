@@ -190,45 +190,6 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
     Some((some_msg, node_id))
 }
 
-/*
-//this is actually possible without any copies at all (even on the stack)
-//for now do it this way
-pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key, Value>, Key)> {
-    let rest = &bytes[4..];
-    println!("len: {}", bytes.len());
-    let (some_msg, len) = match u8_4_to_u32(&bytes[0..4]) as usize {
-        0 => (Message::Ping, 4),
-        len => { //len is inclusive of the id byte
-            let message_type = match rest.first() {
-                None => return None,
-                Some(a) => a
-            };
-            let message = match *message_type {
-                _ if len > rest.len() => return None, //the entire envelope is not here yet
-                1 => {
-                    let key_addr = &rest[1..*keysize+1];
-                    let key = key_cpy(key_addr);
-                    let value = &rest[*keysize+1..len];
-                    Message::Store(key, value.to_owned())
-                },
-                2 => Message::FindNode(key_cpy(&rest[1..len])),
-                3 => Message::FindVal(key_cpy(&rest[1..len])),
-                4 => Message::PingResp,
-                5 => Message::PingResp, //TODO: not PingResp its FindNodeResp
-                6 => Message::PingResp, //TODO: not PingResp its FindValResp
-                _ => return None
-            };
-            //let from_id = (&bytes[len+4..len+4+keysize]);
-            (message, len + 4)
-        }
-    };
-
-    println!("l: {}", len);
-    println!("x");
-    let from_id = key_cpy(&bytes[len..len+keysize]);
-    Some((some_msg, from_id))
-}*/
-
 //this is relatively unsafe
 pub fn u8_2_to_u16 (bytes: &[u8]) -> u16 {
     (bytes[1] as u16 | (bytes[0] as u16) << 8)
