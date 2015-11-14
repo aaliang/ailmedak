@@ -113,8 +113,8 @@ impl KademliaNode {
     }
 
     //Ailmedak's (naive) version of locate node
-    fn find_k_closest (&self, target_node_id: &NodeAddr) {
-        let mut ivec:Vec<(NodeAddr, (NodeAddr, SocketAddr))> = Vec::with_capacity(self.k_val);
+    fn find_k_closest (&self, target_node_id: &NodeAddr) -> Vec<(NodeAddr, (NodeAddr, SocketAddr))> {
+        let mut ivec = Vec::with_capacity(self.k_val);
         let fbuckets = self.buckets.iter().flat_map(|bucket| bucket.iter());
 
         fbuckets.fold(ivec, |mut acc, c| {
@@ -148,8 +148,7 @@ impl KademliaNode {
                 _ => ()
             };
             acc
-        });
-
+        })
     }
 
     fn receive (&mut self, msg: Message<Key, Value>) {
