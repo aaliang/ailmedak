@@ -6,7 +6,6 @@ use message_protocol::{DSocket, Message, Key, Value, ProtoMessage};
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
-
 macro_rules! meta_node {
     ($name: ident (id_len = $length: expr)) => {
         pub trait $name <T> where T: PartialEq + PartialOrd + Rand {
@@ -113,9 +112,43 @@ impl KademliaNode {
         }
     }
 
-    pub fn locate_node (&self, node_id: &NodeAddr) {
-        let diff = self.distance_to(&node_id);
-        let k_index = Self::k_bucket_index(&diff);
+    //Ailmedak's (naive) version of locate node
+    fn find_k_closest (&self, target_node_id: &NodeAddr) {
+        let mut ivec:Vec<(NodeAddr, (NodeAddr, SocketAddr))> = Vec::with_capacity(self.k_val);
+        let x = self.buckets.iter()
+                            .flat_map(|bucket| bucket.iter())
+                            .fold(ivec, |mut acc, c| {
+                                let &(node_id, s_addr) = c;
+                                let dist = Self::dist_as_bytes(&node_id, target_node_id);
+                                //TODO: this is a naive implementation, this can be optimized by
+                                //maintaining sorted order
+                                let remove_result = {
+                                    //yields the first element that is greater than the current
+                                    //distance
+                                    let find_result = acc.iter().enumerate().find(|&(i, x)| {
+                                        let &(i_dist, _) = x;
+                                        match Self::cmp_dist(&i_dist, &dist) {
+                                            a if a == Some(&i_dist) => true,
+                                            _ => false
+                                        }
+                                    });
+
+                                    match find_result {
+                                        None => None,
+                                        Some((i, _)) => Some(i)
+                                    }
+                                };
+
+                                match remove_result {
+                                    Some(i) => {
+                                        acc.remove(i);
+                                        acc.push((dist, (node_id, s_addr)));
+                                    },
+                                    _ => ()
+                                };
+                                acc
+                            });
+
     }
 
     fn receive (&mut self, msg: Message<Key, Value>) {
@@ -171,7 +204,7 @@ impl AilmedakMachine {
 
     /// blocks
     pub fn start (&self) {
-        let mut state = self.init_state(50);
+        let mut state = self.init_state(8);
         let mut receiver = self.socket.try_clone().unwrap();
         let (tx, rx) = channel();
         let reader = thread::spawn(move|| {
