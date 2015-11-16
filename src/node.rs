@@ -190,7 +190,8 @@ fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
 #[derive(Debug)]
 pub enum AsyncAction {
     Awake,
-    EvictTimeout(EvictionCandidate)
+    EvictTimeout(EvictionCandidate),
+    LookupNode(Key, Vec<(Key, [u8; 4], u16)>)
     //PingResp(),
 
 }
@@ -219,7 +220,7 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
             Message::Store(key, val) => {self.data.insert(key, val);},
             //Responses
             Message::FindNodeResp(key, node_vec) => {
-                
+                a_sender.send(AsyncAction::LookupNode(key, node_vec));
             },
             Message::PingResp => {
                 println!("unhandled right now");
@@ -243,6 +244,8 @@ pub trait Machine {
 use std::thread;
 use std::thread::JoinHandle;
 use std::sync::mpsc::{Sender, Receiver, channel};
+
+const DEFAULT_TTL:i64 = 3;
 
 impl AilmedakMachine {
 
@@ -288,7 +291,6 @@ impl AilmedakMachine {
                 let diff = state.distance_to(&node_id);
                 let k_index = KademliaNode::k_bucket_index(&diff);
                 let e_cand = state.update_k_bucket(k_index, (node_id, addr));
-
                 match e_cand {
                     None => (),
                     Some(e_c) => {
@@ -306,26 +308,34 @@ impl AilmedakMachine {
             }
         });
 
+        let ALPHA_FACTOR = 6; //system wide FIND_NODE limit
+        //alpha processor processes events that may be waiting on a future condition. performance
+        //requirements are less stringent within this thread
         let alpha_processor = thread::spawn(move|| {
-            let mut timeoutbuffer:Vec<(EvictionCandidate, i64)> = Vec::new();
-            let DEFAULT_TTL = 2; //APPROX 2 second TTL + 1.2 second granularity
-
+            let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
+            let mut lookup_q:Vec<(Key, [u8; 4], u16)> = Vec::new();
+            let mut find_out:Vec<((Key, [u8; 4], u16), i64)> = Vec::new();
             loop {
                 match a_rx.recv().unwrap() {
                     AsyncAction::Awake => {
-                        let now_secs = get_time().sec;
-                        let (expired, remainder):(Vec<_>, Vec<_>) = 
-                                                  timeoutbuffer.into_iter().partition(|&(ref ec, ref expire_at)| {
-                                                    expire_at >= &now_secs
-                                                  });
+                        /*while !lookup_q.is_empty() && find_out < ALPHA_FACTOR {
 
-                        timeoutbuffer = remainder;
-                        //TODO: this needs to signal back to the k-buckets owner to update
-                        println!("UNHANDLED");
+                        }*/
+                        //these are orthogonal. can be handled in an isolated thread
+                        if !timeoutbuf.is_empty() {
+                            let now_secs = get_time().sec;
+                            let (exp, rem):(Vec<_>, Vec<_>) = timeoutbuf.into_iter().partition(|&(ref ec, ref expire)| expire >= &now_secs);
+                            timeoutbuf = rem;
+                            //TODO: this needs to signal back to the k-buckets owner to update
+                            println!("UNHANDLED");
+                        }
                     },
                     AsyncAction::EvictTimeout(ec) => {
                         let expire_at = get_time().sec + DEFAULT_TTL;
-                        timeoutbuffer.push((ec, expire_at));
+                        timeoutbuf.push((ec, expire_at));
+                    },
+                    AsyncAction::LookupNode(key, close_nodes) => {
+                        lookup_q.extend(close_nodes.iter());
                     }
                 }
                 //println!("{:?}", a);
@@ -333,13 +343,21 @@ impl AilmedakMachine {
         });
 
         loop {
-            thread::sleep_ms(1200);
+            thread::sleep_ms(800);
             a_tx.send(AsyncAction::Awake);
         }
 
         //main thread handles api requests
         //this is temporary
         reader.join();
+    }
+
+    fn fill_to_capacity (lookup_q: &mut Vec<(Key, [u8; 4], u16)>, find_out: &mut Vec<((Key, [u8; 4], u16), i64)>, alpha_factor: &usize) {
+        while !lookup_q.is_empty() && find_out.len() < *alpha_factor {
+            let new_lookup = lookup_q.pop().unwrap();
+            //TODO: need to outbound send the lookup
+            find_out.push((new_lookup, get_time().sec + DEFAULT_TTL));
+        }
     }
 
     pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
