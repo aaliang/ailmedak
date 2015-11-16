@@ -1,6 +1,6 @@
 use rand::{thread_rng, Rng, Rand};
 use std::mem;
-use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
+use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u16_to_u8_2};
 use time::get_time;
@@ -124,7 +124,7 @@ impl KademliaNode {
         } else {
             //TODO: need to ping
             let last_recently_seen = k_bucket.first().unwrap();
-            
+
             Some(EvictionCandidate{
                 new: tup,
                 old: last_recently_seen.to_owned()
@@ -190,7 +190,7 @@ fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
 #[derive(Debug)]
 pub enum AsyncAction {
     Awake,
-    EvictTimeout(EvictionCandidate),
+    SetEvictTimeout(EvictionCandidate),
     LookupNode(Key, Vec<(Key, [u8; 4], u16)>)
     //PingResp(),
 
@@ -294,7 +294,7 @@ impl AilmedakMachine {
                 match e_cand {
                     None => (),
                     Some(e_c) => {
-                        (&a_tx_state).send(AsyncAction::EvictTimeout(e_c));
+                        (&a_tx_state).send(AsyncAction::SetEvictTimeout(e_c));
                         state.send_msg(&state.ping_msg(), addr);
                     }
                 };
@@ -308,19 +308,48 @@ impl AilmedakMachine {
             }
         });
 
+        type FindEntry = (Key, NodeAddr, [u8; 4], u16);
+
+        let alpha_sock = self.socket.try_clone().unwrap();
+
+        //this is out of hand... REFACTOR LATER
+        struct AlphaProcessor {
+            id: NodeAddr
+        };
+
+        impl ProtoMessage for AlphaProcessor {
+            fn id (&self) -> &NodeAddr {
+                &self.id
+            }
+        }
+
+        let ap = AlphaProcessor {id: self.id.clone()};
+
         let ALPHA_FACTOR = 6; //system wide FIND_NODE limit
         //alpha processor processes events that may be waiting on a future condition. performance
         //requirements are less stringent within this thread
         let alpha_processor = thread::spawn(move|| {
+
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
-            let mut lookup_q:Vec<(Key, [u8; 4], u16)> = Vec::new();
-            let mut find_out:Vec<((Key, [u8; 4], u16), i64)> = Vec::new();
+            let mut lookup_q:Vec<FindEntry> = Vec::new();
+            let mut find_out:Vec<(FindEntry, i64)> = Vec::new();
+
+            //if i was a reasonable person i would allow this to return meaningful values. but i am
+            //unreasonably avoiding copies right now (arbitrarily it appears) so im inlining a
+            //network call!
+            let fill_to_capacity = move |lookup_q: &mut Vec<FindEntry>, find_out: &mut Vec<(FindEntry, i64)>, alpha_factor: &usize| {
+                while !lookup_q.is_empty() && find_out.len() < *alpha_factor {
+                    let new_lookup = lookup_q.pop().unwrap();
+                    let (key, _, ip, port) = new_lookup;
+                    (&alpha_sock).send_to(&ap.find_node_msg(&key), (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port));
+                    //TODO: need to outbound send the lookup
+                    find_out.push((new_lookup, get_time().sec + DEFAULT_TTL));
+                }
+            };
+
             loop {
                 match a_rx.recv().unwrap() {
                     AsyncAction::Awake => {
-                        /*while !lookup_q.is_empty() && find_out < ALPHA_FACTOR {
-
-                        }*/
                         //these are orthogonal. can be handled in an isolated thread
                         if !timeoutbuf.is_empty() {
                             let now_secs = get_time().sec;
@@ -330,33 +359,21 @@ impl AilmedakMachine {
                             println!("UNHANDLED");
                         }
                     },
-                    AsyncAction::EvictTimeout(ec) => {
+                    AsyncAction::SetEvictTimeout(ec) => {
                         let expire_at = get_time().sec + DEFAULT_TTL;
                         timeoutbuf.push((ec, expire_at));
                     },
                     AsyncAction::LookupNode(key, close_nodes) => {
-                        lookup_q.extend(close_nodes.iter());
+                        lookup_q.extend(close_nodes.iter().map(|&(node_id, ip, port)| (key, node_id, ip, port)));
+                        fill_to_capacity(&mut lookup_q, &mut find_out, &ALPHA_FACTOR);
                     }
                 }
-                //println!("{:?}", a);
             }
         });
 
         loop {
             thread::sleep_ms(800);
             a_tx.send(AsyncAction::Awake);
-        }
-
-        //main thread handles api requests
-        //this is temporary
-        reader.join();
-    }
-
-    fn fill_to_capacity (lookup_q: &mut Vec<(Key, [u8; 4], u16)>, find_out: &mut Vec<((Key, [u8; 4], u16), i64)>, alpha_factor: &usize) {
-        while !lookup_q.is_empty() && find_out.len() < *alpha_factor {
-            let new_lookup = lookup_q.pop().unwrap();
-            //TODO: need to outbound send the lookup
-            find_out.push((new_lookup, get_time().sec + DEFAULT_TTL));
         }
     }
 
