@@ -138,7 +138,10 @@ impl KademliaNode {
                         Some((i, _)) => Some(i)
                     }
                 }
-                else { None }
+                else {
+                    acc.push((dist, (node_id, s_addr)));
+                    None 
+                }
             };
             match remove_result {
                 Some(i) => {
