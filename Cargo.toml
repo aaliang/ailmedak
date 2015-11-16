@@ -6,6 +6,7 @@ authors = ["aliang <aliang2344@gmail.com>"]
 [dependencies]
 rand = "0.3"
 rust-crypto = "0.2"
+time = "0.1"
 
 [[bin]]
 name = "main"

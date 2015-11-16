@@ -3,6 +3,7 @@ use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
 use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u16_to_u8_2};
+use time::get_time;
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
@@ -57,7 +58,7 @@ pub struct KademliaNode {
     addr_id: NodeAddr,
     buckets: BucketArray,
     k_val: usize,
-    data: HashMap<Key, Value>,
+    data: HashMap<Key, Vec<u8>>,
     socket: UdpSocket
 }
 
@@ -80,7 +81,11 @@ impl ASizedNode<u8> for KademliaNode {
     }
 }
 
-
+#[derive(Debug)]
+pub struct EvictionCandidate {
+    old: (NodeAddr, SocketAddr),
+    new: (NodeAddr, SocketAddr)
+}
 
 impl KademliaNode {
     pub fn new (id: NodeAddr, k_val: usize, write_socket: UdpSocket) -> KademliaNode {
@@ -109,15 +114,21 @@ impl KademliaNode {
         }
     }
 
-    pub fn update_k_bucket (&mut self, k_index: usize, tup: (NodeAddr, SocketAddr)) {
+    pub fn update_k_bucket (&mut self, k_index: usize, tup: (NodeAddr, SocketAddr)) -> Option<EvictionCandidate> {
         let (node_id, sock_addr) = tup;
         let mut k_bucket = &mut self.buckets[k_index];
         let _ = k_bucket.retain(|&(n, _)| node_id != n);
         if k_bucket.len() < self.k_val {
             k_bucket.push(tup);
+            None
         } else {
             //TODO: need to ping
-            println!("TODO: NEED TO HANDLE PING");
+            let last_recently_seen = k_bucket.first().unwrap();
+            
+            Some(EvictionCandidate{
+                new: tup,
+                old: last_recently_seen.to_owned()
+            })
         }
     }
 
@@ -162,6 +173,11 @@ impl KademliaNode {
             acc
         })
     }
+
+    pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
+        self.socket.send_to(msg, addr);
+    }
+
 }
 
 fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
@@ -171,23 +187,43 @@ fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
     }
 }
 
-trait ReceiveMessage <M> {
-    fn receive (&mut self, msg: M, src_addr: SocketAddr);
+#[derive(Debug)]
+pub enum AsyncAction {
+    Awake,
+    EvictTimeout(EvictionCandidate)
+    //PingResp(),
+
 }
 
-impl ReceiveMessage <Message<Key, Value>> for KademliaNode {
-    fn receive (&mut self, msg: Message<Key, Value>, src_addr: SocketAddr) {
+trait ReceiveMessage <M, A> {
+    fn receive (&mut self, msg: M, src_addr: SocketAddr, a_sender: &Sender<A>);
+}
+
+impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
+    fn receive (&mut self, msg: Message<Key, Value>, src_addr: SocketAddr, a_sender: &Sender<AsyncAction>) {
         match msg {
+            Message::Ping => {
+                self.socket.send_to(&self.ping_ack(), src_addr);
+            },
             Message::FindNode(key) => {
-                let k_closest = self.find_k_closest(&key);
-                let message = self.find_node_resp(&k_closest, &key);
-                //this is kind of messy. might want to make it return an enum to do sending
-                self.socket.send_to(&message, src_addr);
+                let kclosest = self.find_k_closest(&key);
+                let response = self.find_node_resp(&kclosest, &key);
+                self.socket.send_to(&response, src_addr);
             },
-            Message::Store(key, val) => {
-                self.data.insert(key, val);
-               // Action::Nothing
+            Message::FindVal (key) => {
+                self.socket.send_to(&(match self.data.get(&key) {
+                    None => self.find_node_resp(&self.find_k_closest(&key), &key),
+                    Some(data) => self.find_val_resp(&key, data)
+                }), src_addr);
             },
+            Message::Store(key, val) => {self.data.insert(key, val);},
+            //Responses
+            Message::FindNodeResp(key, node_vec) => {
+                
+            },
+            Message::PingResp => {
+                println!("unhandled right now");
+            }
             _ => {}
         }
     }
@@ -233,34 +269,73 @@ impl AilmedakMachine {
     pub fn start (&self) {
         let mut state = self.init_state(8);
         let mut receiver = self.socket.try_clone().unwrap();
-        let (tx, rx) = channel();
+        let (m_tx, m_rx) = channel();
+        let (a_tx, a_rx) = channel();
+
         let reader = thread::spawn(move|| {
             loop {
                 match receiver.wait_for_message() {
-                    Ok(a) => {tx.send(a);},
+                    Ok(a) => {m_tx.send(a);},
                     _ => ()
                 };
             }
         });
 
-        //let mut send_socket = self.socket.try_clone().unwrap();
+        let a_tx_state = a_tx.clone();
         let state_thread = thread::spawn(move|| {
-            //let send_socket =             i
             loop {
-                let (message, node_id, addr) = rx.recv().unwrap();
+                let (message, node_id, addr) = m_rx.recv().unwrap();
                 let diff = state.distance_to(&node_id);
                 let k_index = KademliaNode::k_bucket_index(&diff);
-                let _ = state.update_k_bucket(k_index, (node_id, addr));
+                let e_cand = state.update_k_bucket(k_index, (node_id, addr));
+
+                match e_cand {
+                    None => (),
+                    Some(e_c) => {
+                        (&a_tx_state).send(AsyncAction::EvictTimeout(e_c));
+                        state.send_msg(&state.ping_msg(), addr);
+                    }
+                };
                 println!("addr: {:?}", addr);
                 println!("them: {:?}", node_id);
                 println!("us: {:?}", state.my_id());
                 println!("diff: {:?}", &diff[..]);
                 println!("got {:?}", message);
 
-                let action = state.receive(message, addr);
-
+                let action = state.receive(message, addr, &a_tx_state);
             }
         });
+
+        let alpha_processor = thread::spawn(move|| {
+            let mut timeoutbuffer:Vec<(EvictionCandidate, i64)> = Vec::new();
+            let DEFAULT_TTL = 2; //APPROX 2 second TTL + 1.2 second granularity
+
+            loop {
+                match a_rx.recv().unwrap() {
+                    AsyncAction::Awake => {
+                        let now_secs = get_time().sec;
+                        let (expired, remainder):(Vec<_>, Vec<_>) = 
+                                                  timeoutbuffer.into_iter().partition(|&(ref ec, ref expire_at)| {
+                                                    expire_at >= &now_secs
+                                                  });
+
+                        timeoutbuffer = remainder;
+                        //TODO: this needs to signal back to the k-buckets owner to update
+                        println!("UNHANDLED");
+                    },
+                    AsyncAction::EvictTimeout(ec) => {
+                        let expire_at = get_time().sec + DEFAULT_TTL;
+                        timeoutbuffer.push((ec, expire_at));
+                    }
+                }
+                //println!("{:?}", a);
+            }
+        });
+
+        loop {
+            thread::sleep_ms(1200);
+            a_tx.send(AsyncAction::Awake);
+        }
 
         //main thread handles api requests
         //this is temporary
