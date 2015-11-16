@@ -2,14 +2,13 @@ use rand::{thread_rng, Rng, Rand};
 use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
 use std::collections::HashMap;
-use message_protocol::{DSocket, Message, Key, Value, ProtoMessage};
+use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u16_to_u8_2};
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
 macro_rules! meta_node {
     ($name: ident (id_len = $length: expr)) => {
         pub trait $name <T> where T: PartialEq + PartialOrd + Rand {
-
             fn my_id (&self) -> &[T; $length];
             fn dist_as_bytes (a: &[T; $length], b: &[T; $length]) -> [T; $length];
             fn distance_to (&self, to: &[T; $length]) -> [T; $length] {
@@ -58,7 +57,14 @@ pub struct KademliaNode {
     addr_id: NodeAddr,
     buckets: BucketArray,
     k_val: usize,
-    data: HashMap<Key, Value>
+    data: HashMap<Key, Value>,
+    socket: UdpSocket
+}
+
+impl ProtoMessage for KademliaNode {
+    fn id (&self) -> &NodeAddr {
+        &self.addr_id
+    }
 }
 
 impl ASizedNode<u8> for KademliaNode {
@@ -74,8 +80,10 @@ impl ASizedNode<u8> for KademliaNode {
     }
 }
 
+
+
 impl KademliaNode {
-    pub fn new (id: NodeAddr, k_val: usize) -> KademliaNode {
+    pub fn new (id: NodeAddr, k_val: usize, write_socket: UdpSocket) -> KademliaNode {
         let mut buckets:BucketArray = unsafe {mem::uninitialized()};
         for i in buckets.iter_mut() {
             unsafe {::std::ptr::write(i, Vec::with_capacity(k_val)) };
@@ -84,7 +92,8 @@ impl KademliaNode {
             addr_id: id,
             buckets: buckets,
             k_val: k_val,
-            data: HashMap::new()
+            data: HashMap::new(),
+            socket: write_socket
         }
     }
 
@@ -113,7 +122,7 @@ impl KademliaNode {
     }
 
     //Ailmedak's (naive) version of locate node
-    fn find_k_closest (&self, target_node_id: &NodeAddr) -> Vec<(NodeAddr, (NodeAddr, SocketAddr))> {
+    fn find_k_closest (&self, target_node_id: &Key) -> Vec<(Key, (Key, ([u8; 4], [u8; 2])))> {
         let mut ivec = Vec::with_capacity(self.k_val);
         let fbuckets = self.buckets.iter().flat_map(|bucket| bucket.iter());
 
@@ -139,37 +148,52 @@ impl KademliaNode {
                     }
                 }
                 else {
-                    acc.push((dist, (node_id, s_addr)));
-                    None 
+                    acc.push((dist, (node_id, ip_port_pair(s_addr))));
+                    None
                 }
             };
             match remove_result {
                 Some(i) => {
                     acc.remove(i);
-                    acc.push((dist, (node_id, s_addr)));
+                    acc.push((dist, (node_id, ip_port_pair(s_addr))));
                 },
                 _ => ()
             };
             acc
         })
     }
+}
 
-    fn receive (&mut self, msg: Message<Key, Value>) {
+fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
+    match s_addr {
+        SocketAddr::V4(s) => (s.ip().octets(), u16_to_u8_2(&s.port())),
+        _ => panic!("IPV4 NOT CURRENTLY SUPPORTED")
+    }
+}
+
+trait ReceiveMessage <M> {
+    fn receive (&mut self, msg: M, src_addr: SocketAddr);
+}
+
+impl ReceiveMessage <Message<Key, Value>> for KademliaNode {
+    fn receive (&mut self, msg: Message<Key, Value>, src_addr: SocketAddr) {
         match msg {
             Message::FindNode(key) => {
-                let diff = self.distance_to(&key);
-                let k_index = Self::k_bucket_index(&diff);
-                println!("fi: {}", k_index);
+                let k_closest = self.find_k_closest(&key);
+                let message = self.find_node_resp(&k_closest, &key);
+                //this is kind of messy. might want to make it return an enum to do sending
+                self.socket.send_to(&message, src_addr);
             },
             Message::Store(key, val) => {
                 self.data.insert(key, val);
+               // Action::Nothing
             },
-            _ => {
-                //println!("msg"); 
-            }
+            _ => {}
         }
     }
 }
+
+
 
 pub struct AilmedakMachine {
     socket: UdpSocket,
@@ -202,7 +226,7 @@ impl AilmedakMachine {
     }
 
     pub fn init_state (&self, k_val: usize) -> KademliaNode {
-        KademliaNode::new(self.id.clone(), k_val)
+        KademliaNode::new(self.id.clone(), k_val, self.socket.try_clone().unwrap())
     }
 
     /// blocks
@@ -218,18 +242,23 @@ impl AilmedakMachine {
                 };
             }
         });
+
+        //let mut send_socket = self.socket.try_clone().unwrap();
         let state_thread = thread::spawn(move|| {
+            //let send_socket =             i
             loop {
                 let (message, node_id, addr) = rx.recv().unwrap();
                 let diff = state.distance_to(&node_id);
                 let k_index = KademliaNode::k_bucket_index(&diff);
                 let _ = state.update_k_bucket(k_index, (node_id, addr));
                 println!("addr: {:?}", addr);
-                println!("them: {:?}", node_id); 
+                println!("them: {:?}", node_id);
                 println!("us: {:?}", state.my_id());
                 println!("diff: {:?}", &diff[..]);
                 println!("got {:?}", message);
-                let _ = state.receive(message);
+
+                let action = state.receive(message, addr);
+
             }
         });
 
@@ -238,7 +267,7 @@ impl AilmedakMachine {
         reader.join();
     }
 
-    pub fn send_msg <A:ToSocketAddrs> (&mut self, msg: &[u8], addr: A) {
+    pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
         self.socket.send_to(msg, addr);
     }
 }

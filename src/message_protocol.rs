@@ -100,7 +100,7 @@ pub trait ProtoMessage {
         ret
     }
 
-    fn find_node_resp (&self, closest: &Vec<(Key, ([u8; 4], [u8; 2]))>, key: &Key) -> Vec<u8> {
+    fn find_node_resp (&self, closest: &Vec<(Key, (Key, ([u8; 4], [u8; 2])))>, key: &Key) -> Vec<u8> {
         let payload_size = (mem::size_of::<Key>() + 6) * closest.len();
         println!("psize {}", payload_size);
         println!("klen: {}", key.len());
@@ -110,7 +110,7 @@ pub trait ProtoMessage {
             [5].iter().chain(self.id().iter())
                       .chain(bytes.iter())
                       .chain(key.iter()));
-        vec.extend(closest.iter().flat_map(|&(ref a, (ref b, ref c))| {
+        vec.extend(closest.iter().flat_map(|&(_, (ref a, (ref b, ref c)))| {
             a.iter().chain(b.iter()).chain(c.iter())
         }).map(|b| *b));
         vec
