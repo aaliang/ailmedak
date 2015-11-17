@@ -142,34 +142,37 @@ impl KademliaNode {
             let dist = Self::dist_as_bytes(&node_id, target_node_id);
             //TODO: this is a naive implementation, this can be optimized by
             //maintaining sorted order
-            let remove_result = {
+            let todo = {
                 //yields the first element that is greater than the current
                 //distance
-                if acc.len() >= self.k_val {
-                    let find_result = acc.iter().enumerate().find(|&(i, x)| {
-                        let &(i_dist, _) = x;
-                        match Self::cmp_dist(&i_dist, &dist) {
-                            a if a == Some(&i_dist) => true,
-                            _ => false
-                        }
-                    });
-                    match find_result {
-                        None => None,
-                        Some((i, _)) => Some(i)
+                let find_result = acc.iter().enumerate().find(|&(i, x)| {
+                    let &(i_dist, _) = x;
+                    match Self::cmp_dist(&i_dist, &dist) {
+                        a if a == Some(&i_dist) => true,
+                        _ => false
                     }
-                }
-                else {
-                    acc.push((dist, (node_id, ip_port_pair(s_addr))));
-                    None
+                });
+                match find_result {
+                    None => {
+                        if acc.len() >= self.k_val {
+                            None
+                        } else {
+                            Some(acc.len())
+                        }
+                    },
+                    Some((i, _)) => { Some(i) }
                 }
             };
-            match remove_result {
+            match todo {
                 Some(i) => {
-                    acc.remove(i);
-                    acc.push((dist, (node_id, ip_port_pair(s_addr))));
+                    acc.insert(i, (dist, (node_id, ip_port_pair(s_addr))));
+                    if acc.len() > self.k_val {
+                        acc.pop();
+                    }
                 },
                 _ => ()
             };
+            assert!(acc.len() <= self.k_val);
             acc
         })
     }
@@ -308,7 +311,7 @@ impl AilmedakMachine {
             }
         });
 
-        type FindEntry = (Key, NodeAddr, [u8; 4], u16);
+        type FindEntry = (NodeAddr, [u8; 4], u16);
 
         let alpha_sock = self.socket.try_clone().unwrap();
 
@@ -338,11 +341,11 @@ impl AilmedakMachine {
             //if i was a reasonable person i would allow this to return meaningful values. but i am
             //unreasonably avoiding copies right now (arbitrarily it appears) so im inlining a
             //network call!
-            let fill_to_capacity = move |lookup_q: &mut Vec<FindEntry>, find_out: &mut Vec<(FindEntry, i64)>, alpha_factor: &usize| {
+            let fill_to_capacity = move |key: &Key, lookup_q: &mut Vec<FindEntry>, find_out: &mut Vec<(FindEntry, i64)>, alpha_factor: &usize| {
                 while !lookup_q.is_empty() && find_out.len() < *alpha_factor {
                     let new_lookup = lookup_q.pop().unwrap();
-                    let (key, _, ip, port) = new_lookup;
-                    (&alpha_sock).send_to(&ap.find_node_msg(&key), (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port));
+                    let (_, ip, port) = new_lookup;
+                    (&alpha_sock).send_to(&ap.find_node_msg(key), (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port));
                     //TODO: need to outbound send the lookup
                     find_out.push((new_lookup, get_time().sec + DEFAULT_TTL));
                 }
@@ -372,17 +375,20 @@ impl AilmedakMachine {
                             match f_res {
                                 None => true,
                                 Some(&mut (ref a, ref mut vec)) => {
+                                    //TODO: here we need to handle the case where close_nodes is
+                                    //over the k_val at which point we do not want to look at them
                                     close_nodes.retain(|x| !vec.contains(x));
                                     vec.extend(close_nodes.iter());
+                                    fill_to_capacity(&key, vec, &mut find_out, &ALPHA_FACTOR);
                                     false
                                 }
                             }
                         };
+
                         if new {
+                            fill_to_capacity(&key, &mut close_nodes, &mut find_out, &ALPHA_FACTOR);
                             lookup_qi.push((key, close_nodes));
                         }
-                        //lookup_q.extend(close_nodes.iter().map(|&(node_id, ip, port)| (key, node_id, ip, port)));
-                        //fill_to_capacity(&mut lookup_q, &mut find_out, &ALPHA_FACTOR);
                     }
                 }
             }
