@@ -191,7 +191,7 @@ fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
 pub enum AsyncAction {
     Awake,
     SetEvictTimeout(EvictionCandidate),
-    LookupNode(Key, Vec<(Key, [u8; 4], u16)>)
+    LookupResults(Key, Vec<(Key, [u8; 4], u16)>)
     //PingResp(),
 
 }
@@ -220,7 +220,7 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
             Message::Store(key, val) => {self.data.insert(key, val);},
             //Responses
             Message::FindNodeResp(key, node_vec) => {
-                a_sender.send(AsyncAction::LookupNode(key, node_vec));
+                a_sender.send(AsyncAction::LookupResults(key, node_vec));
             },
             Message::PingResp => {
                 println!("unhandled right now");
@@ -331,6 +331,7 @@ impl AilmedakMachine {
         let alpha_processor = thread::spawn(move|| {
 
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
+            let mut lookup_qi: Vec<(Key, Vec<(NodeAddr, [u8; 4], u16)>)> = Vec::new();
             let mut lookup_q:Vec<FindEntry> = Vec::new();
             let mut find_out:Vec<(FindEntry, i64)> = Vec::new();
 
@@ -363,9 +364,25 @@ impl AilmedakMachine {
                         let expire_at = get_time().sec + DEFAULT_TTL;
                         timeoutbuf.push((ec, expire_at));
                     },
-                    AsyncAction::LookupNode(key, close_nodes) => {
-                        lookup_q.extend(close_nodes.iter().map(|&(node_id, ip, port)| (key, node_id, ip, port)));
-                        fill_to_capacity(&mut lookup_q, &mut find_out, &ALPHA_FACTOR);
+                    AsyncAction::LookupResults(key, mut close_nodes) => {
+                        //this is can be heavily optimized. just doing this for the sake of
+                        //correctness right now TODO. recommend maintaining order
+                        let new = {
+                            let f_res = lookup_qi.iter_mut().find(|&&mut(k, _)| k == key);
+                            match f_res {
+                                None => true,
+                                Some(&mut (ref a, ref mut vec)) => {
+                                    close_nodes.retain(|x| !vec.contains(x));
+                                    vec.extend(close_nodes.iter());
+                                    false
+                                }
+                            }
+                        };
+                        if new {
+                            lookup_qi.push((key, close_nodes));
+                        }
+                        //lookup_q.extend(close_nodes.iter().map(|&(node_id, ip, port)| (key, node_id, ip, port)));
+                        //fill_to_capacity(&mut lookup_q, &mut find_out, &ALPHA_FACTOR);
                     }
                 }
             }
