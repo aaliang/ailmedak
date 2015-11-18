@@ -8,6 +8,10 @@ use time::get_time;
 
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
+
+/// A macro for generating a Node trait. Node implementations define how a communicating entity
+/// identifies itself and other entities. More specifically it must implement a unique (or unique
+/// enough id) as well as a distance metric (such as XOR)
 macro_rules! meta_node {
     ($name: ident (id_len = $length: expr)) => {
         pub trait $name <T> where T: PartialEq + PartialOrd + Rand {
@@ -52,9 +56,10 @@ macro_rules! meta_k_bucket {
 pub type NodeAddr = [u8; addr_spc!()];
 type BucketArray = [Vec<(NodeAddr, SocketAddr)>; addr_spc!() * 8 + 1];
 
+///Defines a trait called ASizedNode (using the meta_node template) using a fixed length array of
+///an arbitrary type as id (currently set to 20)
 meta_node!(ASizedNode (id_len = addr_spc!()));
 
-//TODO: this should be genericized
 pub struct KademliaNode {
     addr_id: NodeAddr,
     buckets: BucketArray,
@@ -63,12 +68,14 @@ pub struct KademliaNode {
     socket: UdpSocket
 }
 
+///Implements ProtoMessage so we can create Message envelopes
 impl ProtoMessage for KademliaNode {
     fn id (&self) -> &NodeAddr {
         &self.addr_id
     }
 }
 
+///Concrete implementation using ASizedNode, uses exclusive or (XOR) as a distance metric
 impl ASizedNode<u8> for KademliaNode {
     fn my_id (&self) -> &NodeAddr {
         &self.addr_id
@@ -103,6 +110,8 @@ impl KademliaNode {
         }
     }
 
+    ///Returns the index of the k_bucket (within KademliaNode::buckets) that the given distance
+    ///belongs in
     pub fn k_bucket_index (distance: &NodeAddr) -> usize {
         match distance.iter().enumerate().find(|&(i, byte_val)| *byte_val != -1) {
             Some ((index, val)) => {
@@ -133,7 +142,9 @@ impl KademliaNode {
         }
     }
 
-    //Ailmedak's (naive) version of locate node
+    ///Ailmedak's (naive) version of locate node
+    ///A vector of closest addresses of length {K factor} or {the total number of contacts} (whichever is smaller is) is
+    ///returned
     fn find_k_closest (&self, target_node_id: &Key) -> Vec<(Key, (Key, ([u8; 4], [u8; 2])))> {
         let mut ivec = Vec::with_capacity(self.k_val);
         let fbuckets = self.buckets.iter().flat_map(|bucket| bucket.iter());
@@ -141,8 +152,6 @@ impl KademliaNode {
         fbuckets.fold(ivec, |mut acc, c| {
             let &(node_id, s_addr) = c;
             let dist = Self::dist_as_bytes(&node_id, target_node_id);
-            //TODO: this is a naive implementation, this can be optimized by
-            //maintaining sorted order
             let todo = {
                 //yields the first element that is greater than the current
                 //distance
@@ -272,13 +281,31 @@ impl AilmedakMachine {
         KademliaNode::new(self.id.clone(), k_val, self.socket.try_clone().unwrap())
     }
 
-    /// blocks
+    /// Spins up distinct threads (reader, state, alpha) in a CSP style channel passing model
+    ///
+    /// currently messages can flow either:
+    ///     reader -> state -> alpha (when receiving messages from other nodes)
+    ///     alpha -> state (when timing out contact information)
+    ///
+    /// reader spins around a UDP socket which receives datagrams sent over UDP from the outside
+    /// world. Bytes are deserialized into Ailmedak Messages and passed on to the state thread
+    ///
+    /// state does quick processing. it will update and maintian lists sorted by how
+    /// recently they were last seen. k, v lookups - the actual hash table is contained in here
+    /// currently it is backed by the native Rust HashMap implementation but this is prone to
+    /// change (and easily swapped out)
+    ///
+    /// alpha is concerned with asynchronous processing. state passes async response messages down to
+    /// alpha, crucial for maintaining async state in operations such as lookup node. Additionally
+    /// it also worries about timing out contact information (and updating the state lists) back up
+    /// in the state thread
+    ///
     pub fn start (&self) {
         let mut state = self.init_state(8);
         let mut receiver = self.socket.try_clone().unwrap();
         let (m_tx, m_rx) = channel();
         let (a_tx, a_rx) = channel();
-        let reader = thread::spawn(move|| {
+        let reader_thread = thread::spawn(move|| {
             loop {
                 match receiver.wait_for_message() {
                     Ok(a) => {m_tx.send(a);},
