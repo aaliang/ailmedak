@@ -4,6 +4,7 @@ use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u16_to_u8_2};
+use api_layer::{spawn_api_thread, ClientMessage};
 use time::get_time;
 
 //the size of address space, in bytes
@@ -243,8 +244,6 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
     }
 }
 
-
-
 pub struct AilmedakMachine {
     socket: UdpSocket,
     id: NodeAddr
@@ -259,6 +258,24 @@ use std::thread::JoinHandle;
 use std::sync::mpsc::{Sender, Receiver, channel};
 
 const DEFAULT_TTL:i64 = 3;
+
+pub enum MessageType {
+    FromClient(ClientMessage),
+    FromNode(Message<Key, Value>, NodeAddr, SocketAddr)
+}
+
+macro_rules! is_lookup_finished {
+    ($k_val: expr, $cand_vec: expr) => {{
+        let visited = $cand_vec.iter().take_while(|&&(_, ref color)| *color == Color::Black).count();
+        if visited >= $k_val || visited >= $cand_vec.len() {
+            println!("lookup is done");
+            true
+        } else {
+            false
+        }
+    }}
+
+}
 
 impl AilmedakMachine {
 
@@ -303,12 +320,15 @@ impl AilmedakMachine {
     pub fn start (&self) {
         let mut state = self.init_state(8);
         let mut receiver = self.socket.try_clone().unwrap();
+        let ap = AlphaProcessor {id: self.id.clone(), k_val: state.k_val.clone()};
+
         let (m_tx, m_rx) = channel();
         let (a_tx, a_rx) = channel();
+        let m_tx_reader = m_tx.clone();
         let reader_thread = thread::spawn(move|| {
             loop {
                 match receiver.wait_for_message() {
-                    Ok(a) => {m_tx.send(a);},
+                    Ok((message, node_id, address)) => {m_tx_reader.send(MessageType::FromNode(message, node_id, address));},
                     _ => ()
                 };
             }
@@ -316,34 +336,46 @@ impl AilmedakMachine {
         let a_tx_state = a_tx.clone();
         let state_thread = thread::spawn(move|| {
             loop {
-                let (message, node_id, addr) = m_rx.recv().unwrap();
-                let diff = state.distance_to(&node_id);
-                let k_index = KademliaNode::k_bucket_index(&diff);
-                let e_cand = state.update_k_bucket(k_index, (node_id, addr));
-                match e_cand {
-                    None => (),
-                    Some(e_c) => {
-                        (&a_tx_state).send(AsyncAction::SetEvictTimeout(e_c));
-                        state.send_msg(&state.ping_msg(), addr);
+                match m_rx.recv().unwrap() {
+                    MessageType::FromClient(message) => {
+                        println!("{:?}", message);
                     }
-                };
-                println!("addr: {:?}", addr);
-                println!("them: {:?}", node_id);
-                println!("us: {:?}", state.my_id());
-                println!("diff: {:?}", &diff[..]);
-                println!("got {:?}", message);
+                    MessageType::FromNode(message, node_id, addr) => {
+                        let diff = state.distance_to(&node_id);
+                        let k_index = KademliaNode::k_bucket_index(&diff);
+                        let e_cand = state.update_k_bucket(k_index, (node_id, addr));
+                        match e_cand {
+                            None => (),
+                            Some(e_c) => {
+                                (&a_tx_state).send(AsyncAction::SetEvictTimeout(e_c));
+                                state.send_msg(&state.ping_msg(), addr);
+                            }
+                        };
+                        println!("addr: {:?}", addr);
+                        println!("them: {:?}", node_id);
+                        println!("us: {:?}", state.my_id());
+                        println!("diff: {:?}", &diff[..]);
+                        println!("got {:?}", message);
 
-                let action = state.receive(message, addr, &a_tx_state);
+                        let action = state.receive(message, addr, &a_tx_state);
+                    }
+
+                }
+
             }
         });
 
         let alpha_sock = self.socket.try_clone().unwrap();
-        let ap = AlphaProcessor {id: self.id.clone()};
         let ALPHA_FACTOR = 4; //system wide FIND_NODE limit
         //alpha processor processes events that may be waiting on a future condition. performance
         //requirements are less stringent within this thread
+
+        //this sender allows a feedback loop back into into itself
+        let a_tx_self = a_tx.clone();
         let alpha_processor = thread::spawn(move|| {
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
+            //It would probably be better to use a HashMap for highly concurrent api requests
+            //but for now focus on lower latency in small batches. maybe make this configurable
             let mut lookup_qi: Vec<(Key, Vec<(FindEntry, Color)>)> = Vec::new();
             let mut find_out:Vec<(FindEntry, i64)> = Vec::new();
 
@@ -358,8 +390,8 @@ impl AilmedakMachine {
                             //TODO: this needs to signal back to the k-buckets owner to update
                             println!("UNHANDLED");
                         }
-                        
                         for f in find_out.iter() {
+                            //
                         }
 
                     },
@@ -368,28 +400,33 @@ impl AilmedakMachine {
                         timeoutbuf.push((ec, expire_at));
                     },
                     AsyncAction::LookupResults(key, mut close_nodes) => {
-                        //this is can be heavily optimized. just doing this for the sake of
-                        //correctness right now TODO. recommend maintaining order
                         let is_new = {
                             let f_res = lookup_qi.iter_mut().find(|&&mut(k, _)| k == key);
                             match f_res {
                                 None => true,
                                 Some(&mut (ref a, ref mut key_vec)) => {
                                     Self::merge_into(key_vec, &mut close_nodes);
-                                    Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |find_entry| {
-                                        let (ref node_id, ref ip, ref port) = find_entry;
-                                        alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
-                                        find_out.push((find_entry, get_time().sec+1));
-                                    });
+                                    match is_lookup_finished!(ap.k_val, key_vec) {
+                                        false => {
+                                            Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |find_entry| {
+                                                let (ref node_id, ref ip, ref port) = find_entry;
+                                                alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
+                                                find_out.push((find_entry, get_time().sec+1));
+                                            });
+                                        },
+                                        true => {
+                                            println!("DONE");
+                                            a_tx_self.send(AsyncAction::Awake);
+                                            //signal that we're done
+                                        }
+                                    };
                                     false
                                 }
                             }
                         };
-
-                        if is_new {
+                        if is_new { //assumption here is that new entries cannot be in a finished state
                             let mut new_entry = Vec::new();
                             Self::merge_into(&mut new_entry, &mut close_nodes);
-                            //TODO: same as above
                             Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |find_entry| {
                                 let (ref node_id, ref ip, ref port) = find_entry;
                                 alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
@@ -401,6 +438,9 @@ impl AilmedakMachine {
                 }
             }
         });
+
+        //TODO: this needs to be opt-in
+        spawn_api_thread(5000, m_tx.clone());
 
         loop {
             thread::sleep_ms(800);
@@ -462,19 +502,6 @@ impl AilmedakMachine {
         }
     }
 
-            //if i was a reasonable person i would allow this to return meaningful values. but i am
-            //unreasonably avoiding copies right now (arbitrarily it appears) so im inlining a
-            //network call!
-    /*fn fill_to_capacity (key: &Key, lookup_q: &mut Vec<(FindEntry, Color)>, alpha_factor: &usize, alpha_sock: &UdpSocket, ap: &AlphaProcessor) {
-        while !lookup_q.is_empty() {
-            let new_lookup = lookup_q.pop().unwrap();
-            let (_, ip, port) = new_lookup;
-            (&alpha_sock).send_to(&ap.find_node_msg(key), (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port));
-            //TODO: need to outbound send the lookup
-            //find_out.push((new_lookup, get_time().sec + DEFAULT_TTL));
-        }
-    }*/
-
     pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
         self.socket.send_to(msg, addr);
     }
@@ -492,7 +519,8 @@ impl ProtoMessage for AilmedakMachine {
 
 //this is out of hand... REFACTOR LATER
 struct AlphaProcessor {
-    id: NodeAddr
+    id: NodeAddr,
+    k_val: usize
 }
 
 impl ProtoMessage for AlphaProcessor {
@@ -503,7 +531,7 @@ impl ProtoMessage for AlphaProcessor {
 
 type FindEntry = (NodeAddr, [u8; 4], u16);
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 ///Colors a (kbucket) value representing its status in an arbitrary asynchronous lookup operation
 enum Color {
     Black, // Responded
