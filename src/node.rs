@@ -316,10 +316,8 @@ impl AilmedakMachine {
         //alpha processor processes events that may be waiting on a future condition. performance
         //requirements are less stringent within this thread
         let alpha_processor = thread::spawn(move|| {
-
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
             let mut lookup_qi: Vec<(Key, Vec<(FindEntry, Color)>)> = Vec::new();
-            //let mut lookup_q:Vec<FindEntry> = Vec::new();
             let mut find_out:Vec<(FindEntry, i64)> = Vec::new();
 
             loop {
@@ -333,6 +331,10 @@ impl AilmedakMachine {
                             //TODO: this needs to signal back to the k-buckets owner to update
                             println!("UNHANDLED");
                         }
+                        
+                        for f in find_out.iter() {
+                        }
+
                     },
                     AsyncAction::SetEvictTimeout(ec) => {
                         let expire_at = get_time().sec + DEFAULT_TTL;
@@ -347,7 +349,11 @@ impl AilmedakMachine {
                                 None => true,
                                 Some(&mut (ref a, ref mut key_vec)) => {
                                     Self::merge_into(key_vec, &mut close_nodes);
-                                    
+                                    Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |find_entry| {
+                                        let (ref node_id, ref ip, ref port) = find_entry;
+                                        alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
+                                        find_out.push((find_entry, get_time().sec+1));
+                                    });
                                     false
                                 }
                             }
@@ -356,6 +362,12 @@ impl AilmedakMachine {
                         if is_new {
                             let mut new_entry = Vec::new();
                             Self::merge_into(&mut new_entry, &mut close_nodes);
+                            //TODO: same as above
+                            Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |find_entry| {
+                                let (ref node_id, ref ip, ref port) = find_entry;
+                                alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
+                                find_out.push((find_entry, get_time().sec+1));
+                            });
                             lookup_qi.push((key, new_entry));
                         }
                     }
@@ -439,6 +451,10 @@ impl AilmedakMachine {
     pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
         self.socket.send_to(msg, addr);
     }
+}
+
+fn to_ip_port_pair(ip: &[u8; 4], port: &u16) -> (Ipv4Addr, u16) {
+    (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), *port)
 }
 
 impl ProtoMessage for AilmedakMachine {

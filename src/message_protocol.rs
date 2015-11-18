@@ -68,7 +68,6 @@ pub trait ProtoMessage {
     fn store_msg (&self, key: &Key, val: &[u8]) -> Vec<u8> {
         let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
         let payload_size = (key.len() + val.len()) as u32;
-        let num_payload: [u8; 4] = unsafe { transmute(payload_size.to_be())};
         vec.extend([2].iter().chain(self.id().iter())
                       .chain(key.iter())
                       .chain(val.iter()));
@@ -133,7 +132,6 @@ pub trait ProtoMessage {
 
 
 const KEYSIZE:usize = 20;
-const MIN_MSG_SIZE:usize = 4;
 
 pub type Key = [u8; 20];
 pub type Value = Vec<u8>;
@@ -208,8 +206,6 @@ pub fn u16_to_u8_2 (n: &u16) -> [u8; 2]{
 pub trait DSocket {
     fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, Key, SocketAddr)>;
 }
-
-use std::thread;
 
 impl DSocket for UdpSocket {
     fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, Key, SocketAddr)> {
