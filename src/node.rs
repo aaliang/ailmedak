@@ -1,4 +1,5 @@
 use rand::{thread_rng, Rng, Rand};
+use std::cmp::Ordering;
 use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
@@ -214,7 +215,7 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
                 let response = self.find_node_resp(&kclosest, &key);
                 self.socket.send_to(&response, src_addr);
             },
-            Message::FindVal (key) => {
+            Message::FindVal(key) => {
                 self.socket.send_to(&(match self.data.get(&key) {
                     None => self.find_node_resp(&self.find_k_closest(&key), &key),
                     Some(data) => self.find_val_resp(&key, data)
@@ -277,7 +278,6 @@ impl AilmedakMachine {
         let mut receiver = self.socket.try_clone().unwrap();
         let (m_tx, m_rx) = channel();
         let (a_tx, a_rx) = channel();
-
         let reader = thread::spawn(move|| {
             loop {
                 match receiver.wait_for_message() {
@@ -286,7 +286,6 @@ impl AilmedakMachine {
                 };
             }
         });
-
         let a_tx_state = a_tx.clone();
         let state_thread = thread::spawn(move|| {
             loop {
@@ -311,45 +310,17 @@ impl AilmedakMachine {
             }
         });
 
-        type FindEntry = (NodeAddr, [u8; 4], u16);
-
         let alpha_sock = self.socket.try_clone().unwrap();
-
-        //this is out of hand... REFACTOR LATER
-        struct AlphaProcessor {
-            id: NodeAddr
-        };
-
-        impl ProtoMessage for AlphaProcessor {
-            fn id (&self) -> &NodeAddr {
-                &self.id
-            }
-        }
-
         let ap = AlphaProcessor {id: self.id.clone()};
-
-        let ALPHA_FACTOR = 6; //system wide FIND_NODE limit
+        let ALPHA_FACTOR = 4; //system wide FIND_NODE limit
         //alpha processor processes events that may be waiting on a future condition. performance
         //requirements are less stringent within this thread
         let alpha_processor = thread::spawn(move|| {
 
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
-            let mut lookup_qi: Vec<(Key, Vec<(NodeAddr, [u8; 4], u16)>)> = Vec::new();
-            let mut lookup_q:Vec<FindEntry> = Vec::new();
+            let mut lookup_qi: Vec<(Key, Vec<(FindEntry, Color)>)> = Vec::new();
+            //let mut lookup_q:Vec<FindEntry> = Vec::new();
             let mut find_out:Vec<(FindEntry, i64)> = Vec::new();
-
-            //if i was a reasonable person i would allow this to return meaningful values. but i am
-            //unreasonably avoiding copies right now (arbitrarily it appears) so im inlining a
-            //network call!
-            let fill_to_capacity = move |key: &Key, lookup_q: &mut Vec<FindEntry>, find_out: &mut Vec<(FindEntry, i64)>, alpha_factor: &usize| {
-                while !lookup_q.is_empty() && find_out.len() < *alpha_factor {
-                    let new_lookup = lookup_q.pop().unwrap();
-                    let (_, ip, port) = new_lookup;
-                    (&alpha_sock).send_to(&ap.find_node_msg(key), (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port));
-                    //TODO: need to outbound send the lookup
-                    find_out.push((new_lookup, get_time().sec + DEFAULT_TTL));
-                }
-            };
 
             loop {
                 match a_rx.recv().unwrap() {
@@ -370,24 +341,22 @@ impl AilmedakMachine {
                     AsyncAction::LookupResults(key, mut close_nodes) => {
                         //this is can be heavily optimized. just doing this for the sake of
                         //correctness right now TODO. recommend maintaining order
-                        let new = {
+                        let is_new = {
                             let f_res = lookup_qi.iter_mut().find(|&&mut(k, _)| k == key);
                             match f_res {
                                 None => true,
-                                Some(&mut (ref a, ref mut vec)) => {
-                                    //TODO: here we need to handle the case where close_nodes is
-                                    //over the k_val at which point we do not want to look at them
-                                    close_nodes.retain(|x| !vec.contains(x));
-                                    vec.extend(close_nodes.iter());
-                                    fill_to_capacity(&key, vec, &mut find_out, &ALPHA_FACTOR);
+                                Some(&mut (ref a, ref mut key_vec)) => {
+                                    Self::merge_into(key_vec, &mut close_nodes);
+                                    
                                     false
                                 }
                             }
                         };
 
-                        if new {
-                            fill_to_capacity(&key, &mut close_nodes, &mut find_out, &ALPHA_FACTOR);
-                            lookup_qi.push((key, close_nodes));
+                        if is_new {
+                            let mut new_entry = Vec::new();
+                            Self::merge_into(&mut new_entry, &mut close_nodes);
+                            lookup_qi.push((key, new_entry));
                         }
                     }
                 }
@@ -400,6 +369,73 @@ impl AilmedakMachine {
         }
     }
 
+    /// 'Colors' at most num_to_color elements Grey and runs a function accepting a generic T
+    fn color <F, T>(field: &mut[(T, Color)], num_to_color: usize, func: F) where F:FnMut(T) -> (){
+        //i wonder how the FP facilities in rust compare
+        let mut num_left = num_to_color;
+        for &mut(_, ref mut c) in field.iter_mut() {
+            match c {
+                &mut Color::White => {
+                    *c = Color::Grey(get_time().sec + 1);
+                    num_left -= 1;
+                    if num_left == 0 {
+                        break
+                    }
+                },
+                _ => ()
+            }
+        }
+    }
+
+    fn merge_into (into: &mut Vec<(FindEntry, Color)>, candidates: &mut Vec<FindEntry>) {
+        let mut list: Vec<Option<usize>> = vec![];
+        {
+            let mut cand = candidates.iter().enumerate().peekable();
+            let mut present = into.iter().enumerate().peekable();
+            loop {
+                match (cand.peek(), present.peek()) {
+                    (None, _)|(_, None) => break,
+                    (Some(&(c_i, &(c_id, _, _))), Some(&(p_i, &((p_id, _, _), ref color)))) => {
+                        if c_id == p_id {
+                            cand.next();
+                            present.next();
+                            list.push(None);
+                        } else {
+                            let greater = KademliaNode::cmp_dist(&c_id, &p_id);
+                            match greater {
+                                a if a == Some(&p_id) => {
+                                    list.push(Some(p_i));
+                                    cand.next();
+                                },
+                                _ => { present.next(); }
+                            }
+                        }
+                    }
+                }
+            }
+            list.extend(cand.map(|_| Some(candidates.len())));
+        }
+        for (i, new_item) in list.iter().rev().zip(candidates.iter()) {
+            match i {
+                &Some(index) => into.insert(index, (new_item.clone(), Color::White)),
+                _ => ()
+            };
+        }
+    }
+
+            //if i was a reasonable person i would allow this to return meaningful values. but i am
+            //unreasonably avoiding copies right now (arbitrarily it appears) so im inlining a
+            //network call!
+    /*fn fill_to_capacity (key: &Key, lookup_q: &mut Vec<(FindEntry, Color)>, alpha_factor: &usize, alpha_sock: &UdpSocket, ap: &AlphaProcessor) {
+        while !lookup_q.is_empty() {
+            let new_lookup = lookup_q.pop().unwrap();
+            let (_, ip, port) = new_lookup;
+            (&alpha_sock).send_to(&ap.find_node_msg(key), (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port));
+            //TODO: need to outbound send the lookup
+            //find_out.push((new_lookup, get_time().sec + DEFAULT_TTL));
+        }
+    }*/
+
     pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
         self.socket.send_to(msg, addr);
     }
@@ -409,4 +445,26 @@ impl ProtoMessage for AilmedakMachine {
     fn id (&self) -> &NodeAddr {
         &self.id
     }
+}
+
+//this is out of hand... REFACTOR LATER
+struct AlphaProcessor {
+    id: NodeAddr
+}
+
+impl ProtoMessage for AlphaProcessor {
+    fn id (&self) -> &NodeAddr {
+        &self.id
+    }
+}
+
+type FindEntry = (NodeAddr, [u8; 4], u16);
+
+#[derive(Clone)]
+///Colors a (kbucket) value representing its status in an arbitrary asynchronous lookup operation
+enum Color {
+    Black, // Responded
+    Grey(i64), // InTransit, value means the time it is valid for
+    White, // Unvisited
+    Yellow // Quarantined (Timedout)
 }
