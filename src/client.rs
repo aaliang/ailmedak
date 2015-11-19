@@ -25,7 +25,7 @@ fn main () {
 
             let mut msg = vec![0];
             let key_as_bytes = key.into_bytes();
-            let len_as_bytes:[u8; 4] = unsafe{ mem::transmute(key_as_bytes.len().to_be() as u32 )};
+            let len_as_bytes:[u8; 4] = unsafe{ mem::transmute((key_as_bytes.len() as u32).to_be())};
 
             msg.extend(len_as_bytes.iter().chain(key_as_bytes.iter()));
             let addr_ref:&str = addr.as_ref();
@@ -33,7 +33,9 @@ fn main () {
         },
         "set" => {
             let key = env::args().nth(2).unwrap();
+            println!("key is: {}", key);
             let val = env::args().nth(3).unwrap();
+            println!("val is: {}", val);
             let addr = env::args().nth(4).unwrap();
             let binding = format!("0.0.0.0:{}", env::args().nth(5).unwrap().parse::<u16>().unwrap());
             let local_binding:&str = binding.as_ref();
@@ -41,9 +43,13 @@ fn main () {
 
             let mut msg = vec![1];
             let key_as_bytes = key.into_bytes();
+            println!("kab: {:?}", key_as_bytes);
             let val_as_bytes = val.into_bytes();
-            let key_len_as_bytes:[u8; 4] = unsafe {mem::transmute(key_as_bytes.len().to_be() as u32)};
-            let val_len_as_bytes:[u8; 4] = unsafe {mem::transmute(val_as_bytes.len().to_be() as u32)};
+            let key_len_as_bytes:[u8; 4] = unsafe {mem::transmute((key_as_bytes.len() as u32).to_be())};
+
+            println!("klb: {:?}", key_len_as_bytes);
+            let val_len_as_bytes:[u8; 4] = unsafe {mem::transmute((val_as_bytes.len() as u32).to_be())};
+            println!("vlb: {:?}", val_len_as_bytes);
 
             msg.extend(
                 key_len_as_bytes.iter().chain(key_as_bytes.iter())

@@ -4,7 +4,7 @@ use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u16_to_u8_2};
-use api_layer::{spawn_api_thread, ClientMessage};
+use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use time::get_time;
 
 //the size of address space, in bytes
@@ -333,12 +333,31 @@ impl AilmedakMachine {
                 };
             }
         });
+
+        //TODO: this needs to be opt-in
+        let (_, cb_tx) = spawn_api_thread(5000, m_tx.clone());
+        let cb_tx_state = cb_tx.clone();
+
         let a_tx_state = a_tx.clone();
         let state_thread = thread::spawn(move|| {
             loop {
                 match m_rx.recv().unwrap() {
                     MessageType::FromClient(message) => {
                         println!("{:?}", message);
+                        match message {
+                            ClientMessage::Get(key) => {
+                                match state.data.get(&key) {
+                                    None => {
+                                        println!("need to node_lookup");
+                                    },
+                                    Some(data) => {
+                                        //TODO: use a refcell
+                                        cb_tx_state.send(Callback::Resolve(key, data.clone()));
+                                    }
+                                }
+                            },
+                            ClientMessage::Set(key, val) => { state.data.insert(key, val);}
+                        };
                     }
                     MessageType::FromNode(message, node_id, addr) => {
                         let diff = state.distance_to(&node_id);
@@ -438,9 +457,6 @@ impl AilmedakMachine {
                 }
             }
         });
-
-        //TODO: this needs to be opt-in
-        spawn_api_thread(5000, m_tx.clone());
 
         loop {
             thread::sleep_ms(800);
