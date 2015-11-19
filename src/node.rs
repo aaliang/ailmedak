@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
-use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u16_to_u8_2};
+use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u8_2_to_u16, u16_to_u8_2};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use time::get_time;
 
@@ -155,13 +155,13 @@ impl KademliaNode {
     ///Ailmedak's (naive) version of locate node
     ///A vector of closest addresses of length {K factor} or {the total number of contacts} (whichever is smaller is) is
     ///returned
-    /*fn find_k_closest_global(&self, target_node_id: &Key, alpha_channel: &Sender<Message<Key, Value>>) {
-        let local_closest = self.find_k_closest(target_node_id);
+    fn find_k_closest_global(&self, target_node_id: Key, alpha_channel: &Sender<AsyncAction>) {
+        let local_closest = self.find_k_closest(&target_node_id).iter().map(|&(_, (node_id, (ip, port)))| {
+            (node_id, ip, u8_2_to_u16(&port))
+        }).collect::<Vec<(Key, [u8; 4], u16)>>();
         //TODO: consider case where there are no contacts
-        alpha_channel.send(AsyncAction::LookupResults(local_closest));
-    
-    }*/
-
+        let _ = alpha_channel.send(AsyncAction::LookupResults(target_node_id, local_closest));
+    }
 
     fn find_k_closest (&self, target_node_id: &Key) -> Vec<(Key, (Key, ([u8; 4], [u8; 2])))> {
         let mut ivec = Vec::with_capacity(self.k_val);
@@ -444,7 +444,7 @@ impl AilmedakMachine {
                                     Self::merge_into(key_vec, &mut close_nodes, &key);
                                     match is_lookup_finished!(ap.k_val, key_vec) {
                                         false => {
-                                            Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |find_entry| {
+                                            Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
                                                 let (ref node_id, ref ip, ref port) = find_entry;
                                                 alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
                                                 find_out.push((find_entry, get_time().sec+1));
@@ -463,7 +463,7 @@ impl AilmedakMachine {
                         if is_new { //assumption here is that new entries cannot be in a finished state
                             let mut new_entry = Vec::new();
                             Self::merge_into(&mut new_entry, &mut close_nodes, &key);
-                            Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |find_entry| {
+                            Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
                                 let (ref node_id, ref ip, ref port) = find_entry;
                                 alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
                                 find_out.push((find_entry, get_time().sec+1));
@@ -482,13 +482,14 @@ impl AilmedakMachine {
     }
 
     /// 'Colors' at most num_to_color elements Grey and runs a function accepting a generic T
-    fn color <F, T>(field: &mut[(T, Color)], num_to_color: usize, func: F) where F:FnMut(T) -> (){
+    fn color <F, T>(field: &mut[(T, Color)], num_to_color: usize, mut func: F) where F:FnMut(&mut T) -> (){
         //i wonder how the FP facilities in rust compare
         let mut num_left = num_to_color;
-        for &mut(_, ref mut c) in field.iter_mut() {
+        for &mut(ref mut t, ref mut c) in field.iter_mut() {
             match c {
                 &mut Color::White => {
                     *c = Color::Grey(get_time().sec + 1);
+                    func(t);
                     num_left -= 1;
                     if num_left == 0 {
                         break

@@ -2,17 +2,13 @@
 use std::thread;
 use std::thread::JoinHandle;
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::Arc;
-use std::sync::mpsc::{Sender, Receiver, channel};
+use std::sync::mpsc::{Sender, channel};
 use std::net::{UdpSocket, SocketAddr};
 use message_protocol::u8_4_to_u32;
 use crypto::sha1::Sha1;
 use crypto::digest::Digest;
 use node::MessageType;
-use message_protocol::{Message, Key, Value};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::cell::RefCell;
 
 #[derive(Debug)]
 pub enum ClientMessage {
