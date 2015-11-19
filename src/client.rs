@@ -2,6 +2,7 @@ extern crate ailmedak;
 use std::env;
 use std::net::UdpSocket;
 use std::mem;
+use std::thread;
 
 /// Basic cmd line tool to get and/or set from an ailmedak cluster
 ///
@@ -22,6 +23,15 @@ fn main () {
             let binding = format!("0.0.0.0:{}", env::args().nth(4).unwrap().parse::<u16>().unwrap());
             let local_binding:&str = binding.as_ref();
             let sock = UdpSocket::bind(local_binding).unwrap();
+            let rec_sock = sock.try_clone().unwrap();
+
+            let handle = thread::spawn(move || {
+                loop {
+                    let mut buf = [0; 60000];
+                    let (bytes_read, _) = rec_sock.recv_from(&mut buf).unwrap();
+                    println!("{:?}", &buf[..bytes_read]);
+                }
+            });
 
             let mut msg = vec![0];
             let key_as_bytes = key.into_bytes();
@@ -30,6 +40,8 @@ fn main () {
             msg.extend(len_as_bytes.iter().chain(key_as_bytes.iter()));
             let addr_ref:&str = addr.as_ref();
             sock.send_to(&msg, addr_ref);
+
+            handle.join();
         },
         "set" => {
             let key = env::args().nth(2).unwrap();

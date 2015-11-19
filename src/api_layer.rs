@@ -12,6 +12,7 @@ use crypto::digest::Digest;
 use node::MessageType;
 use message_protocol::{Message, Key, Value};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::cell::RefCell;
 
 #[derive(Debug)]
 pub enum ClientMessage {
@@ -48,6 +49,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                     let mut hash_key:[u8; 20] = [0; 20];
                     let _ = sha.result(&mut hash_key);
                     let _ = tx.send(Callback::Register(hash_key.clone(), src));
+                    println!("GETTING: {:?}", hash_key);
                     let _ = send.send(MessageType::FromClient(ClientMessage::Get(hash_key)));
                 },
                 Some(&1) => { //this is a store
@@ -60,6 +62,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                     let _ = sha.input(key);
                     let mut hash_key:[u8; 20] = [0; 20];
                     let _ = sha.result(&mut hash_key);
+                    println!("SETTING: {:?}", hash_key);
                     let _ = send.send(MessageType::FromClient(ClientMessage::Set(hash_key, val.to_owned())));
                 }
                 _ => ()
@@ -72,25 +75,31 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
     let response_socket = bind.try_clone().unwrap();
     let outbound_thread = thread::spawn(move || {
         let mut req_map:HashMap<[u8; 20], Vec<SocketAddr>> = HashMap::new();
-        match rx.recv().unwrap() {
-            Callback::Register(key, src) =>  {
-                let res = match req_map.entry(key) {
-                    Vacant(entry) => entry.insert(Vec::new()),
-                    Occupied(entry) => entry.into_mut()
-                };
-                res.push(src);
-                //storing
-                println!("{:?} from {:?}", &key, src);
-            },
-            Callback::Resolve(key, val) => {
-                if let Some(vec) = req_map.get(&key) {
-                    for addr in vec {
-                        println!("found");
-                        response_socket.send_to(&val, addr);
+        loop {
+            match rx.recv().unwrap() {
+                Callback::Register(key, src) =>  {
+                    let res = match req_map.entry(key) {
+                        Vacant(entry) => entry.insert(Vec::new()),
+                        Occupied(entry) => entry.into_mut()
+                    };
+                    res.push(src);
+                    //storing
+                    println!("{:?} from {:?}", &key, src);
+                },
+                Callback::Resolve(key, val) => {
+                    if let Some(vec) = req_map.remove(&key) {
+                        println!("g");
+                        for addr in vec {
+                            println!("found");
+                            response_socket.send_to(&val, addr);
+                        }
                     }
+
                 }
             }
         }
+
+        println!("state: {:?}", req_map);
 
     });
 

@@ -351,7 +351,7 @@ impl AilmedakMachine {
                                         println!("need to node_lookup");
                                     },
                                     Some(data) => {
-                                        //TODO: use a refcell
+                                        println!("f");
                                         cb_tx_state.send(Callback::Resolve(key, data.clone()));
                                     }
                                 }
