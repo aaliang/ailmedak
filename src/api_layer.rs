@@ -22,6 +22,7 @@ pub enum ClientMessage {
 
 pub enum Callback {
     Register([u8; 20], SocketAddr),
+    //TODO: an Arc wrapper, RwLock, or just a large array might be more performant
     Resolve([u8; 20], Vec<u8>)
 }
 
@@ -36,7 +37,6 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
     let listener = bind.try_clone().unwrap();
     let request_thread = thread::spawn(move || {
         println!("binding client port: {}", port);
-        
         loop {
             let mut buf:[u8; 4096] = [0; 4096];
             let (amt, src) = listener.recv_from(&mut buf).unwrap();

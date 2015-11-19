@@ -43,6 +43,15 @@ macro_rules! meta_node {
                 }
                 return None
             }
+            fn cmp_dist_wrt <'a> (a: &'a[T; $length], b: &'a[T; $length], basis: &'a[T; $length]) -> Option<&'a[T; $length]> {
+                let a_dist = Self::dist_as_bytes(basis, a);
+                let b_dist = Self::dist_as_bytes(basis, b);
+                match Self::cmp_dist(&a_dist, &b_dist) {
+                    Some(_a) if _a == &a_dist => Some(a),
+                    Some(_b) if _b == &b_dist => Some(b),
+                    _ => panic!("invalid dist")
+                }
+            }
         }
     };
 }
@@ -146,6 +155,14 @@ impl KademliaNode {
     ///Ailmedak's (naive) version of locate node
     ///A vector of closest addresses of length {K factor} or {the total number of contacts} (whichever is smaller is) is
     ///returned
+    /*fn find_k_closest_global(&self, target_node_id: &Key, alpha_channel: &Sender<Message<Key, Value>>) {
+        let local_closest = self.find_k_closest(target_node_id);
+        //TODO: consider case where there are no contacts
+        alpha_channel.send(AsyncAction::LookupResults(local_closest));
+    
+    }*/
+
+
     fn find_k_closest (&self, target_node_id: &Key) -> Vec<(Key, (Key, ([u8; 4], [u8; 2])))> {
         let mut ivec = Vec::with_capacity(self.k_val);
         let fbuckets = self.buckets.iter().flat_map(|bucket| bucket.iter());
@@ -424,7 +441,7 @@ impl AilmedakMachine {
                             match f_res {
                                 None => true,
                                 Some(&mut (ref a, ref mut key_vec)) => {
-                                    Self::merge_into(key_vec, &mut close_nodes);
+                                    Self::merge_into(key_vec, &mut close_nodes, &key);
                                     match is_lookup_finished!(ap.k_val, key_vec) {
                                         false => {
                                             Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |find_entry| {
@@ -445,7 +462,7 @@ impl AilmedakMachine {
                         };
                         if is_new { //assumption here is that new entries cannot be in a finished state
                             let mut new_entry = Vec::new();
-                            Self::merge_into(&mut new_entry, &mut close_nodes);
+                            Self::merge_into(&mut new_entry, &mut close_nodes, &key);
                             Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |find_entry| {
                                 let (ref node_id, ref ip, ref port) = find_entry;
                                 alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
@@ -459,7 +476,7 @@ impl AilmedakMachine {
         });
 
         loop {
-            thread::sleep_ms(800);
+            thread::sleep_ms(300);
             a_tx.send(AsyncAction::Awake);
         }
     }
@@ -482,7 +499,7 @@ impl AilmedakMachine {
         }
     }
 
-    fn merge_into (into: &mut Vec<(FindEntry, Color)>, candidates: &mut Vec<FindEntry>) {
+    fn merge_into (into: &mut Vec<(FindEntry, Color)>, candidates: &mut Vec<FindEntry>, basis: &Key) {
         let mut list: Vec<Option<usize>> = vec![];
         {
             let mut cand = candidates.iter().enumerate().peekable();
@@ -496,7 +513,7 @@ impl AilmedakMachine {
                             present.next();
                             list.push(None);
                         } else {
-                            let greater = KademliaNode::cmp_dist(&c_id, &p_id);
+                            let greater = KademliaNode::cmp_dist_wrt(&c_id, &p_id, basis);
                             match greater {
                                 a if a == Some(&p_id) => {
                                     list.push(Some(p_i));
