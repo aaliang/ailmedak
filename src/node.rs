@@ -7,6 +7,10 @@ use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u8_2_to_u16, 
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use time::get_time;
 
+// TODO: the components within this file are prone for moving into sub modules
+// for a systems perspective, ignore the uninteresting distance metrics and go straight to
+// the Ailmedak Machine, which describes the roles of each worker operating around a node
+
 //the size of address space, in bytes
 macro_rules! addr_spc { () => { 20 } }
 
@@ -16,11 +20,18 @@ macro_rules! addr_spc { () => { 20 } }
 macro_rules! meta_node {
     ($name: ident (id_len = $length: expr)) => {
         pub trait $name <T> where T: PartialEq + PartialOrd + Rand {
+
             fn my_id (&self) -> &[T; $length];
+
+            /// an arbitrary distance metric
             fn dist_as_bytes (a: &[T; $length], b: &[T; $length]) -> [T; $length];
+
+            /// Returns the distance from this to another id
             fn distance_to (&self, to: &[T; $length]) -> [T; $length] {
                 Self::dist_as_bytes(self.my_id(), to)
             }
+
+            /// Generates a new id, randomly
             fn gen_new_id () -> [T; $length] {
                 let mut id_buf:[T; $length] = unsafe { mem::uninitialized() };
                 let mut nrg = thread_rng();
@@ -31,6 +42,8 @@ macro_rules! meta_node {
                 }
                 id_buf
             }
+
+            /// Given two ids/addresses returns an option containing whichever one is larger
             fn cmp_dist <'a> (a: &'a[T; $length], b: &'a[T; $length]) -> Option<&'a[T; $length]>{
                 let zipped = a.iter().zip(b.iter());
                 for (_a, _b) in zipped {
@@ -43,6 +56,9 @@ macro_rules! meta_node {
                 }
                 return None
             }
+
+            /// Given two ids and a basis, returns an option over the id which is further from the
+            /// basis
             fn cmp_dist_wrt <'a> (a: &'a[T; $length], b: &'a[T; $length], basis: &'a[T; $length]) -> Option<&'a[T; $length]> {
                 let a_dist = Self::dist_as_bytes(basis, a);
                 let b_dist = Self::dist_as_bytes(basis, b);
@@ -99,12 +115,9 @@ impl ASizedNode<u8> for KademliaNode {
     }
 }
 
-#[derive(Debug)]
-pub struct EvictionCandidate {
-    old: (NodeAddr, SocketAddr),
-    new: (NodeAddr, SocketAddr)
-}
-
+/// Vanilla implementation of the state of a node, according to the Kademlia paper.
+/// provides facilities for retrieving, and putting into k-buckets (governed by distance)
+/// and returning the k closest known nodes (that are considered active) to a given id
 impl KademliaNode {
     pub fn new (id: NodeAddr, k_val: usize, write_socket: UdpSocket) -> KademliaNode {
         let mut buckets:BucketArray = unsafe {mem::uninitialized()};
@@ -134,6 +147,7 @@ impl KademliaNode {
         }
     }
 
+    ///updates the k buckets to enforce least recently seen ordering
     pub fn update_k_bucket (&mut self, k_index: usize, tup: (NodeAddr, SocketAddr)) -> Option<EvictionCandidate> {
         let (node_id, sock_addr) = tup;
         let mut k_bucket = &mut self.buckets[k_index];
@@ -163,6 +177,7 @@ impl KademliaNode {
         let _ = alpha_channel.send(AsyncAction::LookupResults(target_node_id, local_closest));
     }
 
+    /// finds locally, the k closest nodes to the target_node_id
     fn find_k_closest (&self, target_node_id: &Key) -> Vec<(Key, (Key, ([u8; 4], [u8; 2])))> {
         let mut ivec = Vec::with_capacity(self.k_val);
         let fbuckets = self.buckets.iter().flat_map(|bucket| bucket.iter());
@@ -211,11 +226,18 @@ impl KademliaNode {
 
 }
 
+/// converts a socket address to a tuple of an ip, port represented as bytes
 fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
     match s_addr {
         SocketAddr::V4(s) => (s.ip().octets(), u16_to_u8_2(&s.port())),
         _ => panic!("IPV4 NOT CURRENTLY SUPPORTED")
     }
+}
+
+#[derive(Debug)]
+pub struct EvictionCandidate {
+    old: (NodeAddr, SocketAddr),
+    new: (NodeAddr, SocketAddr)
 }
 
 #[derive(Debug)]
@@ -226,6 +248,12 @@ pub enum AsyncAction {
     //PingResp(),
 
 }
+
+pub enum MessageType {
+    FromClient(ClientMessage),
+    FromNode(Message<Key, Value>, NodeAddr, SocketAddr)
+}
+
 
 trait ReceiveMessage <M, A> {
     fn receive (&mut self, msg: M, src_addr: SocketAddr, a_sender: &Sender<A>);
@@ -276,11 +304,8 @@ use std::sync::mpsc::{Sender, Receiver, channel};
 
 const DEFAULT_TTL:i64 = 3;
 
-pub enum MessageType {
-    FromClient(ClientMessage),
-    FromNode(Message<Key, Value>, NodeAddr, SocketAddr)
-}
-
+///Returns true if a lookup can be considered finished
+///TODO: need to also compensate for Yellow nodes (timedout ones)
 macro_rules! is_lookup_finished {
     ($k_val: expr, $cand_vec: expr) => {{
         let visited = $cand_vec.iter().take_while(|&&(_, ref color)| *color == Color::Black).count();
@@ -294,8 +319,12 @@ macro_rules! is_lookup_finished {
 
 }
 
+///Higher level abstractions on a node. Contain worker threads that process certain types of
+///messages (i.e. internal messages, messages from other nodes within the system, and messages from
+///clients that wish to consume the get/set api)
 impl AilmedakMachine {
 
+    /// instantiates a machine with the given id
     pub fn with_id(port: u16, id: NodeAddr) -> AilmedakMachine {
         let mut socket = match UdpSocket::bind(("0.0.0.0", port)) {
             Ok(a) => a,
@@ -307,6 +336,7 @@ impl AilmedakMachine {
         }
     }
 
+    /// instantiates a machine with a random id
     pub fn new(port: u16) -> AilmedakMachine {
         Self::with_id(port, KademliaNode::gen_new_id())
     }
@@ -336,29 +366,33 @@ impl AilmedakMachine {
     ///
     pub fn start (&self) {
         let mut state = self.init_state(8);
-        let mut receiver = self.socket.try_clone().unwrap();
+        let k_val = state.k_val.clone();
         let ap = AlphaProcessor {id: self.id.clone(), k_val: state.k_val.clone()};
 
         let (m_tx, m_rx) = channel();
         let (a_tx, a_rx) = channel();
-        let m_tx_reader = m_tx.clone();
-        let reader_thread = thread::spawn(move|| {
-            loop {
-                match receiver.wait_for_message() {
-                    Ok((message, node_id, address)) => {m_tx_reader.send(MessageType::FromNode(message, node_id, address));},
-                    _ => ()
-                };
-            }
-        });
 
+        let proto_thread = Self::spawn_proto_thread(self.socket.try_clone().unwrap(), m_tx.clone());
         //TODO: this needs to be opt-in
         let (_, cb_tx) = spawn_api_thread(5000, m_tx.clone());
-        let cb_tx_state = cb_tx.clone();
 
-        let a_tx_state = a_tx.clone();
-        let state_thread = thread::spawn(move|| {
+        let state_thread = Self::spawn_state_thread(state, m_rx, cb_tx.clone(), a_tx.clone());
+
+        //alpha processor processes events that may be waiting on a future condition. performance
+        //requirements are less stringent within this thread
+        let alpha_thread = Self::spawn_alpha_thread(ap, a_rx, a_tx.clone(), self.socket.try_clone().unwrap());
+
+        loop {
+            thread::sleep_ms(300);
+            a_tx.send(AsyncAction::Awake);
+        }
+    }
+
+    /// state thread manages the k-lists staying mostly true to Kademlia's description
+    fn spawn_state_thread (mut state: KademliaNode,  rx: Receiver<MessageType>,  to_api: Sender<Callback>, to_async: Sender<AsyncAction>) -> JoinHandle<()> {
+        thread::spawn(move|| {
             loop {
-                match m_rx.recv().unwrap() {
+                match rx.recv().unwrap() {
                     MessageType::FromClient(message) => {
                         println!("{:?}", message);
                         match message {
@@ -369,7 +403,7 @@ impl AilmedakMachine {
                                     },
                                     Some(data) => {
                                         println!("f");
-                                        cb_tx_state.send(Callback::Resolve(key, data.clone()));
+                                        to_api.send(Callback::Resolve(key, data.clone()));
                                     }
                                 }
                             },
@@ -383,7 +417,7 @@ impl AilmedakMachine {
                         match e_cand {
                             None => (),
                             Some(e_c) => {
-                                (&a_tx_state).send(AsyncAction::SetEvictTimeout(e_c));
+                                (&to_async).send(AsyncAction::SetEvictTimeout(e_c));
                                 state.send_msg(&state.ping_msg(), addr);
                             }
                         };
@@ -393,28 +427,24 @@ impl AilmedakMachine {
                         println!("diff: {:?}", &diff[..]);
                         println!("got {:?}", message);
 
-                        let action = state.receive(message, addr, &a_tx_state);
+                        let action = state.receive(message, addr, &to_async);
                     }
 
                 }
 
             }
-        });
+        })
+    }
 
-        let alpha_sock = self.socket.try_clone().unwrap();
-        let ALPHA_FACTOR = 4; //system wide FIND_NODE limit
-        //alpha processor processes events that may be waiting on a future condition. performance
-        //requirements are less stringent within this thread
-
-        //this sender allows a feedback loop back into into itself
-        let a_tx_self = a_tx.clone();
-        let alpha_processor = thread::spawn(move|| {
+    /// alpha thread attempts to asynchronous responses from other nodes and timeouts
+    fn spawn_alpha_thread (ap: AlphaProcessor, a_rx: Receiver<AsyncAction>, a_tx_self: Sender<AsyncAction>, alpha_sock: UdpSocket) -> JoinHandle<()> {
+        let ALPHA_FACTOR = 4;
+        thread::spawn(move|| {
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
             //It would probably be better to use a HashMap for highly concurrent api requests
             //but for now focus on lower latency in small batches. maybe make this configurable
             let mut lookup_qi: Vec<(Key, Vec<(FindEntry, Color)>)> = Vec::new();
             let mut find_out:Vec<(FindEntry, i64)> = Vec::new();
-
             loop {
                 match a_rx.recv().unwrap() {
                     AsyncAction::Awake => {
@@ -473,12 +503,20 @@ impl AilmedakMachine {
                     }
                 }
             }
-        });
+        })
+    }
 
-        loop {
-            thread::sleep_ms(300);
-            a_tx.send(AsyncAction::Awake);
-        }
+    ///proto thread waits for messages from other nodes to come in over a designated UdpSocket.
+    ///Valid protocol messages are passed onto the state thread
+    fn spawn_proto_thread(mut receiver: UdpSocket, m_tx: Sender<MessageType>) -> JoinHandle<()> {
+        thread::spawn(move|| {
+            loop {
+                match receiver.wait_for_message() {
+                    Ok((message, node_id, address)) => {m_tx.send(MessageType::FromNode(message, node_id, address));},
+                    _ => ()
+                };
+            }
+        })
     }
 
     /// 'Colors' at most num_to_color elements Grey and runs a function accepting a generic T
@@ -517,7 +555,7 @@ impl AilmedakMachine {
                             let greater = KademliaNode::cmp_dist_wrt(&c_id, &p_id, basis);
                             match greater {
                                 a if a == Some(&p_id) => {
-                                    list.push(Some(p_i));
+                                    list.push(Some(c_i)); //push the smaller one
                                     cand.next();
                                 },
                                 _ => { present.next(); }
