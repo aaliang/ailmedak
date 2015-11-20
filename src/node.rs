@@ -174,7 +174,7 @@ impl KademliaNode {
             (node_id, ip, u8_2_to_u16(&port))
         }).collect::<Vec<(Key, [u8; 4], u16)>>();
         //TODO: consider case where there are no contacts
-        let _ = alpha_channel.send(AsyncAction::LookupResults(target_node_id, local_closest));
+        let _ = alpha_channel.send(AsyncAction::LookupResults(target_node_id, local_closest, None));
     }
 
     /// finds locally, the k closest nodes to the target_node_id
@@ -244,7 +244,9 @@ pub struct EvictionCandidate {
 pub enum AsyncAction {
     Awake,
     SetEvictTimeout(EvictionCandidate),
-    LookupResults(Key, Vec<(Key, [u8; 4], u16)>)
+    // the key producing these results, contact information for these results, and the nodeid from
+    // the source (none if the source is the resident node)
+    LookupResults(Key, Vec<(Key, [u8; 4], u16)>, Option<Key>)
     //PingResp(),
 
 }
@@ -256,11 +258,11 @@ pub enum MessageType {
 
 
 trait ReceiveMessage <M, A> {
-    fn receive (&mut self, msg: M, src_addr: SocketAddr, a_sender: &Sender<A>);
+    fn receive (&mut self, msg: M, src_addr: SocketAddr, a_sender: &Sender<A>, node_id: NodeAddr);
 }
 
 impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
-    fn receive (&mut self, msg: Message<Key, Value>, src_addr: SocketAddr, a_sender: &Sender<AsyncAction>) {
+    fn receive (&mut self, msg: Message<Key, Value>, src_addr: SocketAddr, a_sender: &Sender<AsyncAction>, node_id: NodeAddr) {
         match msg {
             Message::Ping => {
                 self.socket.send_to(&self.ping_ack(), src_addr);
@@ -279,7 +281,7 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
             Message::Store(key, val) => {self.data.insert(key, val);},
             //Responses
             Message::FindNodeResp(key, node_vec) => {
-                a_sender.send(AsyncAction::LookupResults(key, node_vec));
+                a_sender.send(AsyncAction::LookupResults(key, node_vec, Some(node_id)));
             },
             Message::PingResp => {
                 println!("unhandled right now");
@@ -427,7 +429,7 @@ impl AilmedakMachine {
                         println!("diff: {:?}", &diff[..]);
                         println!("got {:?}", message);
 
-                        let action = state.receive(message, addr, &to_async);
+                        let action = state.receive(message, addr, &to_async, node_id);
                     }
 
                 }
@@ -465,13 +467,20 @@ impl AilmedakMachine {
                         let expire_at = get_time().sec + DEFAULT_TTL;
                         timeoutbuf.push((ec, expire_at));
                     },
-                    AsyncAction::LookupResults(key, mut close_nodes) => {
+                    AsyncAction::LookupResults(key, mut close_nodes, from_id) => {
                         let is_new = {
                             let f_res = lookup_qi.iter_mut().find(|&&mut(k, _)| k == key);
                             match f_res {
                                 None => true,
                                 Some(&mut (ref a, ref mut key_vec)) => {
                                     Self::merge_into(key_vec, &mut close_nodes, &key);
+                                    //unoptimized... set the from_id to black (visited)
+                                    if let Some(fid) = from_id {
+                                        if let Some(&mut( _, ref mut color)) = key_vec.iter_mut().find(|&&mut((key, _, _), _)| key == fid) {
+                                            *color = Color::Black;
+                                        } // probably should have gone with a HM
+                                        find_out.retain(|&((fe, _, _), _)| fe != fid);
+                                    }
                                     match is_lookup_finished!(ap.k_val, key_vec) {
                                         false => {
                                             Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
