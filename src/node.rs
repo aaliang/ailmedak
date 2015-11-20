@@ -65,7 +65,7 @@ macro_rules! meta_node {
                 match Self::cmp_dist(&a_dist, &b_dist) {
                     Some(_a) if _a == &a_dist => Some(a),
                     Some(_b) if _b == &b_dist => Some(b),
-                    _ => panic!("invalid dist")
+                    _ => None
                 }
             }
         }
