@@ -84,9 +84,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                 },
                 Callback::Resolve(key, val) => {
                     if let Some(vec) = req_map.remove(&key) {
-                        println!("g");
                         for addr in vec {
-                            println!("found");
                             response_socket.send_to(&val, addr);
                         }
                     }
