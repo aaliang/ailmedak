@@ -7,3 +7,5 @@ Included is a binary to start a DHT node within a 160-bit namespace and a defaul
 Ailmedak's long term goal is to be almost exclusively stack-based. While this may be useful for extremely stringent performance requirements (but probably not) and/or in embedded systems the true reason behind this is because forcing no dynamic memory is a fun challenge :)
 
 This is still a work in progress!
+
+This is currently just a P system in terms of CAP theorem. It will eventually become AP
