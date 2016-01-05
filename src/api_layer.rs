@@ -24,7 +24,7 @@ pub enum Callback {
 
 ///Exposes Ailmedak to consumers (not nodes) who would like to access the core as a key value
 ///store. for now only UDP is used as transport
-///TODO: perhaps it should not start the thread itself
+///Returns a tuple of the handle of the thread, and a Sender that the thread listens to messages on
 pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()>, Sender<Callback>){
     let (tx, rx) = channel();
     let bind = UdpSocket::bind(("0.0.0.0", port)).unwrap();

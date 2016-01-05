@@ -5,6 +5,7 @@ use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u8_2_to_u16, u16_to_u8_2};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
+use config::Config;
 use time::get_time;
 
 // TODO: the components within this file are prone for moving into sub modules
@@ -292,7 +293,7 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
 }
 
 pub struct AilmedakMachine {
-    socket: UdpSocket,
+    network_socket: UdpSocket,
     id: NodeAddr
 }
 
@@ -318,34 +319,12 @@ macro_rules! is_lookup_finished {
             false
         }
     }}
-
 }
 
 ///Higher level abstractions on a node. Contain worker threads that process certain types of
 ///messages (i.e. internal messages, messages from other nodes within the system, and messages from
 ///clients that wish to consume the get/set api)
 impl AilmedakMachine {
-
-    /// instantiates a machine with the given id
-    pub fn with_id(port: u16, id: NodeAddr) -> AilmedakMachine {
-        let mut socket = match UdpSocket::bind(("0.0.0.0", port)) {
-            Ok(a) => a,
-            _ => panic!("unable to bind")
-        };
-        AilmedakMachine {
-            socket: socket,
-            id: id
-        }
-    }
-
-    /// instantiates a machine with a random id
-    pub fn new(port: u16) -> AilmedakMachine {
-        Self::with_id(port, KademliaNode::gen_new_id())
-    }
-
-    pub fn init_state (&self, k_val: usize) -> KademliaNode {
-        KademliaNode::new(self.id.clone(), k_val, self.socket.try_clone().unwrap())
-    }
 
     /// Spins up distinct threads (reader, state, alpha) in a CSP style channel passing model
     ///
@@ -366,23 +345,38 @@ impl AilmedakMachine {
     /// it also worries about timing out contact information (and updating the state lists) back up
     /// in the state thread
     ///
-    pub fn start (&self) {
-        let mut state = self.init_state(8);
-        let k_val = state.k_val.clone();
-        let ap = AlphaProcessor {id: self.id.clone(), k_val: state.k_val.clone()};
+    /// TODO: i hate this... it hides away previously intended modularity in a supermethod
+    //pub fn start (&self) {
+    pub fn start (config: Config) {
+        let network_socket = match UdpSocket::bind(("0.0.0.0", config.network_port.clone())) {
+            Ok(a) => a,
+            _ => panic!("unable to bind")
+        };
+        let mut state = KademliaNode::new(KademliaNode::gen_new_id(), config.k_val.clone(), network_socket.try_clone().unwrap());
+        let ap = AlphaProcessor {id: state.id().clone(), k_val: state.k_val.clone()};
 
         let (m_tx, m_rx) = channel();
         let (a_tx, a_rx) = channel();
 
-        let proto_thread = Self::spawn_proto_thread(self.socket.try_clone().unwrap(), m_tx.clone());
+        let proto_thread = Self::spawn_proto_thread(network_socket.try_clone().unwrap(), m_tx.clone());
         //TODO: this needs to be opt-in
-        let (_, cb_tx) = spawn_api_thread(5000, m_tx.clone());
 
-        let state_thread = Self::spawn_state_thread(state, m_rx, cb_tx.clone(), a_tx.clone());
+        let cb_tx = match config {
+            Config {api_port: Some(port_val), ..} => {
+                let (_, s) = spawn_api_thread(port_val, m_tx.clone());
+                s //this is a channel that might do something with a callback
+            },
+            _ => {
+                let (c, _) = channel();
+                c //this is a channel that does nothing
+            }
+        };
+
+        let state_thread = Self::spawn_state_thread(state, m_rx, cb_tx, a_tx.clone());
 
         //alpha processor processes events that may be waiting on a future condition. performance
         //requirements are less stringent within this thread
-        let alpha_thread = Self::spawn_alpha_thread(ap, a_rx, a_tx.clone(), self.socket.try_clone().unwrap());
+        let alpha_thread = Self::spawn_alpha_thread(ap, a_rx, a_tx.clone(), network_socket.try_clone().unwrap());
 
         loop {
             thread::sleep_ms(300);
@@ -392,6 +386,7 @@ impl AilmedakMachine {
 
     /// state thread manages the k-lists staying mostly true to Kademlia's description
     fn spawn_state_thread (mut state: KademliaNode,  rx: Receiver<MessageType>,  to_api: Sender<Callback>, to_async: Sender<AsyncAction>) -> JoinHandle<()> {
+
         thread::spawn(move|| {
             loop {
                 match rx.recv().unwrap() {
@@ -405,6 +400,8 @@ impl AilmedakMachine {
                                     },
                                     Some(data) => {
                                         println!("f");
+                                        //if this node has an client api side, it will send the resolved key back to the api layer.
+                                        //otherwise it will send a message down the channel that will just be discarded
                                         to_api.send(Callback::Resolve(key, data.clone()));
                                     }
                                 }
@@ -584,7 +581,7 @@ impl AilmedakMachine {
     }
 
     pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
-        self.socket.send_to(msg, addr);
+        self.network_socket.send_to(msg, addr);
     }
 }
 
