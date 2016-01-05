@@ -344,23 +344,24 @@ impl AilmedakMachine {
     /// alpha, crucial for maintaining async state in operations such as lookup node. Additionally
     /// it also worries about timing out contact information (and updating the state lists) back up
     /// in the state thread
-    ///
-    /// TODO: i hate this... it hides away previously intended modularity in a supermethod
-    //pub fn start (&self) {
-    pub fn start (config: Config) {
-        let network_socket = match UdpSocket::bind(("0.0.0.0", config.network_port.clone())) {
+    pub fn start (config: Config, id_opt: Option<NodeAddr>) {
+        println!("[ALIVE]");
+        let network_socket = match UdpSocket::bind(("0.0.0.0", config.network_port)) {
             Ok(a) => a,
             _ => panic!("unable to bind")
         };
-        let mut state = KademliaNode::new(KademliaNode::gen_new_id(), config.k_val.clone(), network_socket.try_clone().unwrap());
+        println!("[STATUS] NODE BIND CLUSTER PORT <{}>", config.network_port);
+        let mut state = KademliaNode::new(
+            id_opt.unwrap_or_else(||KademliaNode::gen_new_id()),
+            config.k_val.clone(),
+            network_socket.try_clone().unwrap());
+
         let ap = AlphaProcessor {id: state.id().clone(), k_val: state.k_val.clone()};
 
         let (m_tx, m_rx) = channel();
         let (a_tx, a_rx) = channel();
 
         let proto_thread = Self::spawn_proto_thread(network_socket.try_clone().unwrap(), m_tx.clone());
-        //TODO: this needs to be opt-in
-
         let cb_tx = match config {
             Config {api_port: Some(port_val), ..} => {
                 let (_, s) = spawn_api_thread(port_val, m_tx.clone());
@@ -379,7 +380,7 @@ impl AilmedakMachine {
         let alpha_thread = Self::spawn_alpha_thread(ap, a_rx, a_tx.clone(), network_socket.try_clone().unwrap());
 
         loop {
-            thread::sleep_ms(300);
+            thread::sleep_ms(config.async_poll_interval);
             a_tx.send(AsyncAction::Awake);
         }
     }

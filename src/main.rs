@@ -14,9 +14,10 @@ fn main () {
     let configuration = Config {
         network_port: port,
         api_port: Some(5000),
-        k_val: 8
+        k_val: 8,
+        async_poll_interval: 300
     };
 
-    AilmedakMachine::start(configuration);
+    AilmedakMachine::start(configuration, None);
 
 }

@@ -32,7 +32,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
 
     let listener = bind.try_clone().unwrap();
     let request_thread = thread::spawn(move || {
-        println!("binding client port: {}", port);
+        println!("[STATUS] API LISTENING ON PORT <{}>", port);
         loop {
             let mut buf:[u8; 4096] = [0; 4096];
             let (amt, src) = listener.recv_from(&mut buf).unwrap();
