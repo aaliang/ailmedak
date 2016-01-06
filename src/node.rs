@@ -115,6 +115,7 @@ impl ASizedNode<u8> for KademliaNode {
         dist
     }
 }
+/// TODO: i hate this... it hides away previously intended modularity in a supermethod}
 
 /// Vanilla implementation of the state of a node, according to the Kademlia paper.
 /// provides facilities for retrieving, and putting into k-buckets (governed by distance)
@@ -231,7 +232,7 @@ impl KademliaNode {
 fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
     match s_addr {
         SocketAddr::V4(s) => (s.ip().octets(), u16_to_u8_2(&s.port())),
-        _ => panic!("IPV4 NOT CURRENTLY SUPPORTED")
+        _ => panic!("IPV6 NOT CURRENTLY SUPPORTED")
     }
 }
 
