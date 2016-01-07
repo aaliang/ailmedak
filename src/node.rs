@@ -138,9 +138,10 @@ impl KademliaNode {
     ///belongs in
     pub fn k_bucket_index (distance: &NodeAddr) -> usize {
         //find the first index that is not all ones. note: this needs to be tested thoroughly
-        match distance.iter().enumerate().find(|&(i, byte_val)| *byte_val != !(byte_val & 0)) {
+        match distance.iter().enumerate().find(|&(i, byte_val)| *byte_val != 0) {
             Some ((index, val)) => {
                 let push_macro = 8 * (distance.len() - index - 1);
+                println!("val.lz {}", val.leading_zeros());
                 let push_micro = 8 - (val.leading_zeros() as usize) - 1;
                 let comb_push = push_macro + push_micro;
                 comb_push
