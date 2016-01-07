@@ -23,17 +23,14 @@ defmodule StartCluster do
     {values, _, _} = OptionParser.parse(System.argv(), switches: [exec: :string, n: :integer])
     {values[:exec], values[:n]}
   end
-  def get_executable_path do
-  end
 end
 
 defmodule RunLocal do
-  @exec StartCluster.get_executable_path()
   def run(port_tup, exec) do
     {cluster_port, api_port} = port_tup
     IO.puts "cluster port: #{cluster_port}, api_port: #{api_port}"
     spawn fn ->
-      :os.cmd('#{exec} #{cluster_port}')
+      :os.cmd('#{exec} -p #{cluster_port} -a #{api_port}')
     end
   end
 end

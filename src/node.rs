@@ -115,7 +115,6 @@ impl ASizedNode<u8> for KademliaNode {
         dist
     }
 }
-/// TODO: i hate this... it hides away previously intended modularity in a supermethod}
 
 /// Vanilla implementation of the state of a node, according to the Kademlia paper.
 /// provides facilities for retrieving, and putting into k-buckets (governed by distance)
@@ -138,7 +137,8 @@ impl KademliaNode {
     ///Returns the index of the k_bucket (within KademliaNode::buckets) that the given distance
     ///belongs in
     pub fn k_bucket_index (distance: &NodeAddr) -> usize {
-        match distance.iter().enumerate().find(|&(i, byte_val)| *byte_val != -1) {
+        //find the first index that is not all ones. note: this needs to be tested thoroughly
+        match distance.iter().enumerate().find(|&(i, byte_val)| *byte_val != !(byte_val & 0)) {
             Some ((index, val)) => {
                 let push_macro = 8 * (distance.len() - index - 1);
                 let push_micro = 8 - (val.leading_zeros() as usize) - 1;

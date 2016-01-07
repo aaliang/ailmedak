@@ -9,3 +9,15 @@ Ailmedak's long term goal is to be almost exclusively stack-based. While this ma
 This is still a work in progress!
 
 This is currently just a P system in terms of CAP theorem. It will eventually become AP
+
+## requirements
+platform: Unix/Linux
+rust 1.5.0
+optional: elixir, erlang for some scripts
+
+## starting a node
+with cargo:
+```cargo run --bin main -- -p 3444 -a 8000```
+from binary:
+```./main -p 3444 -a 8000```
+
