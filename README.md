@@ -16,8 +16,12 @@ rust 1.5.0
 optional: elixir, erlang for some scripts
 
 ## starting a node
-with cargo:
-```cargo run --bin main -- -p 3444 -a 8000```
-from binary:
-```./main -p 3444 -a 8000```
+- with cargo:
+  ```cargo run --bin main -- -p 3444 -a 8000```
+- from binary:
+  ```./main -p 3444 -a 8000```
+
+## local cluster
+4 nodes on one process for development purposes
+```cargo run --bin multi```
 
