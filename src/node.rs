@@ -5,6 +5,7 @@ use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u8_2_to_u16, u16_to_u8_2};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
+use fmt_utils::{as_hex_string};
 use config::Config;
 use time::get_time;
 
@@ -346,16 +347,19 @@ impl AilmedakMachine {
     /// it also worries about timing out contact information (and updating the state lists) back up
     /// in the state thread
     pub fn start (config: Config, id_opt: Option<NodeAddr>) {
-        println!("[ALIVE]");
         let network_socket = match UdpSocket::bind(("0.0.0.0", config.network_port)) {
             Ok(a) => a,
             _ => panic!("unable to bind")
         };
-        println!("[STATUS] NODE BIND CLUSTER PORT <{}>", config.network_port);
+
         let mut state = KademliaNode::new(
             id_opt.unwrap_or_else(||KademliaNode::gen_new_id()),
             config.k_val.clone(),
             network_socket.try_clone().unwrap());
+
+        let hex_id = as_hex_string(state.id());
+
+        println!("[{}] NODE BIND CLUSTER PORT <{}>", hex_id, config.network_port);
 
         let ap = AlphaProcessor {id: state.id().clone(), k_val: state.k_val.clone()};
 
@@ -408,7 +412,10 @@ impl AilmedakMachine {
                                     }
                                 }
                             },
-                            ClientMessage::Set(key, val) => { state.data.insert(key, val);}
+                            ClientMessage::Set(key, val) => {
+                                //TODO: remove me and use nodelookup
+                                state.data.insert(key, val);
+                            }
                         };
                     }
                     MessageType::FromNode(message, node_id, addr) => {
@@ -438,6 +445,7 @@ impl AilmedakMachine {
     }
 
     /// alpha thread attempts to asynchronous responses from other nodes and timeouts
+    // TODO: make alpha_sock a Sender
     fn spawn_alpha_thread (ap: AlphaProcessor, a_rx: Receiver<AsyncAction>, a_tx_self: Sender<AsyncAction>, alpha_sock: UdpSocket) -> JoinHandle<()> {
         let ALPHA_FACTOR = 4;
         thread::spawn(move|| {
@@ -597,7 +605,6 @@ impl ProtoMessage for AilmedakMachine {
     }
 }
 
-//this is out of hand... REFACTOR LATER
 struct AlphaProcessor {
     id: NodeAddr,
     k_val: usize

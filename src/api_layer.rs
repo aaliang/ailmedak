@@ -1,4 +1,3 @@
-//extern crate
 use std::thread;
 use std::thread::JoinHandle;
 use std::collections::HashMap;
@@ -85,7 +84,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                 Callback::Resolve(key, val) => {
                     if let Some(vec) = req_map.remove(&key) {
                         for addr in vec {
-                            response_socket.send_to(&val, addr);
+                            let _ = response_socket.send_to(&val, addr);
                         }
                     }
 
