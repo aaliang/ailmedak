@@ -1,5 +1,4 @@
 use rand::{thread_rng, Rng, Rand};
-use std::cmp::Ordering;
 use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
@@ -88,6 +87,7 @@ impl KademliaNode {
         let mut k_bucket = &mut self.buckets[k_index];
         let _ = k_bucket.retain(|&(n, _)| node_id != n);
         if k_bucket.len() < self.k_val {
+            //add contact info if below threshold
             k_bucket.push(tup);
             None
         } else {
@@ -219,17 +219,14 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
                 a_sender.send(AsyncAction::LookupResults(key, node_vec, Some(node_id)));
             },
             Message::PingResp => {
-                println!("unhandled right now");
+                //TODO: if this is an eviction candidate, do stuff such that it isn't evicted
             }
             _ => {}
         }
     }
 }
 
-pub struct AilmedakMachine {
-    network_socket: UdpSocket,
-    id: NodeAddr
-}
+pub struct AilmedakMachine;
 
 pub trait Machine {
     fn start (&mut self, port: u16);
@@ -289,6 +286,11 @@ impl AilmedakMachine {
             config.k_val.clone(),
             network_socket.try_clone().unwrap());
 
+        for i_neighbor in config.initial_neighbors.iter() {
+            let as_ref:&str = i_neighbor.as_ref();
+            state.send_msg(&state.ping_msg(), as_ref);
+        }
+
         let hex_id = as_hex_string(state.id());
 
         println!("[{}] NODE BIND CLUSTER PORT <{}>", hex_id, config.network_port);
@@ -329,7 +331,6 @@ impl AilmedakMachine {
             loop {
                 match rx.recv().unwrap() {
                     MessageType::FromClient(message) => {
-                        println!("{:?}", message);
                         match message {
                             ClientMessage::Get(key) => {
                                 match state.data.get(&key) {
@@ -350,24 +351,24 @@ impl AilmedakMachine {
                             }
                         };
                     }
-                    MessageType::FromNode(message, node_id, addr) => {
+                    MessageType::FromNode(message, node_id, ip_addr) => {
                         let diff = state.distance_to(&node_id);
                         let k_index = KademliaNode::k_bucket_index(&diff);
-                        let e_cand = state.update_k_bucket(k_index, (node_id, addr));
+                        let e_cand = state.update_k_bucket(k_index, (node_id, ip_addr));
                         match e_cand {
                             None => (),
                             Some(e_c) => {
                                 (&to_async).send(AsyncAction::SetEvictTimeout(e_c));
-                                state.send_msg(&state.ping_msg(), addr);
+                                state.send_msg(&state.ping_msg(), ip_addr);
                             }
                         };
-                        println!("addr: {:?}", addr);
-                        println!("them: {:?}", node_id);
-                        println!("us: {:?}", state.my_id());
-                        println!("diff: {:?}", &diff[..]);
-                        println!("got {:?}", message);
+                        //println!("addr: {:?}", addr);
+                        //println!("them: {:?}", node_id);
+                        //println!("us: {:?}", state.my_id());
+                        //println!("diff: {:?}", &diff[..]);
+                        println!("[{}] |{:?}| <- {}", as_hex_string(state.id()), message, as_hex_string(&node_id));
 
-                        let action = state.receive(message, addr, &to_async, node_id);
+                        let action = state.receive(message, ip_addr, &to_async, node_id);
                     }
 
                 }
@@ -398,7 +399,7 @@ impl AilmedakMachine {
                             println!("UNHANDLED");
                         }
                         for f in find_out.iter() {
-                            //
+                            
                         }
 
                     },
@@ -522,19 +523,10 @@ impl AilmedakMachine {
         }
     }
 
-    pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
-        self.network_socket.send_to(msg, addr);
-    }
 }
 
 fn to_ip_port_pair(ip: &[u8; 4], port: &u16) -> (Ipv4Addr, u16) {
     (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), *port)
-}
-
-impl ProtoMessage for AilmedakMachine {
-    fn id (&self) -> &NodeAddr {
-        &self.id
-    }
 }
 
 struct AlphaProcessor {

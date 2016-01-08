@@ -17,7 +17,8 @@ fn main () {
             network_port: 3000,
             api_port: Some(api_port),
             k_val: 8,
-            async_poll_interval: 300
+            async_poll_interval: 300,
+            initial_neighbors: vec![]
         }, None);
     });
 
@@ -27,7 +28,8 @@ fn main () {
                 network_port: port_range_start + i,
                 api_port: None,
                 k_val: 8,
-                async_poll_interval: 300
+                async_poll_interval: 300,
+                initial_neighbors: vec!["0.0.0.0:3000".to_string()]
             }, None);
         });
     }

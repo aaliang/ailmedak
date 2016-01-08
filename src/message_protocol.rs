@@ -214,7 +214,7 @@ impl DSocket for UdpSocket {
             match self.recv_from(&mut ibuf) {
                 Ok((0, _)) => return Err(Error::new(ErrorKind::Other, "graceful disconnect")),
                 Ok((num_read, addr)) => {
-                    println!("{:?}", &ibuf[0..num_read]);
+                    //println!("{:?}", &ibuf[0..num_read]);
                     match try_decode(&ibuf[0..num_read], &KEYSIZE) {
                         None => continue,
                         Some((msg, from_id)) => return Ok((msg, from_id, addr))
