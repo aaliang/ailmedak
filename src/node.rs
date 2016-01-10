@@ -1,10 +1,12 @@
 use rand::{thread_rng, Rng, Rand};
 use std::mem;
-use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
+use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
 use std::collections::HashMap;
-use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u8_2_to_u16, u16_to_u8_2};
+use message_protocol::{DSocket, Message, Key, Value, ProtoMessage};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use utils::fmt::{as_hex_string};
+use utils::networking::{ip_port_pair, ip_port_pair_bytes};
+use utils::{u8_2_to_u16};
 use config::Config;
 use time::get_time;
 
@@ -70,7 +72,7 @@ impl KademliaNode {
     ///belongs in
     pub fn k_bucket_index (distance: &NodeAddr) -> usize {
         //find the first index that is not all ones. note: this needs to be tested thoroughly
-        match distance.iter().enumerate().find(|&(i, byte_val)| *byte_val != 0) {
+        match distance.iter().enumerate().find(|&(_, byte_val)| *byte_val != 0) {
             Some ((index, val)) => {
                 let push_macro = 8 * (distance.len() - index - 1);
                 let push_micro = 8 - (val.leading_zeros() as usize) - 1;
@@ -83,7 +85,7 @@ impl KademliaNode {
 
     ///updates the k buckets to enforce least recently seen ordering
     pub fn update_k_bucket (&mut self, k_index: usize, tup: (NodeAddr, SocketAddr)) -> Option<EvictionCandidate> {
-        let (node_id, sock_addr) = tup;
+        let (node_id, _) = tup;
         let mut k_bucket = &mut self.buckets[k_index];
         let _ = k_bucket.retain(|&(n, _)| node_id != n);
         if k_bucket.len() < self.k_val {
@@ -114,7 +116,7 @@ impl KademliaNode {
 
     /// finds locally, the k closest nodes to the target_node_id
     fn find_k_closest (&self, target_node_id: &Key) -> Vec<(Key, (Key, ([u8; 4], [u8; 2])))> {
-        let mut ivec = Vec::with_capacity(self.k_val);
+        let ivec = Vec::with_capacity(self.k_val);
         let fbuckets = self.buckets.iter().flat_map(|bucket| bucket.iter());
 
         fbuckets.fold(ivec, |mut acc, c| {
@@ -123,7 +125,7 @@ impl KademliaNode {
             let todo = {
                 //yields the first element that is greater than the current
                 //distance
-                let find_result = acc.iter().enumerate().find(|&(i, x)| {
+                let find_result = acc.iter().enumerate().find(|&(_, x)| {
                     let &(i_dist, _) = x;
                     match Self::cmp_dist(&i_dist, &dist) {
                         a if a == Some(&i_dist) => true,
@@ -143,7 +145,7 @@ impl KademliaNode {
             };
             match todo {
                 Some(i) => {
-                    acc.insert(i, (dist, (node_id, ip_port_pair(s_addr))));
+                    acc.insert(i, (dist, (node_id, ip_port_pair_bytes(s_addr))));
                     if acc.len() > self.k_val {
                         acc.pop();
                     }
@@ -156,17 +158,9 @@ impl KademliaNode {
     }
 
     pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
-        self.socket.send_to(msg, addr);
+        let _ = self.socket.send_to(msg, addr);
     }
 
-}
-
-/// converts a socket address to a tuple of an ip, port represented as bytes
-fn ip_port_pair (s_addr: SocketAddr) -> ([u8; 4], [u8; 2]) {
-    match s_addr {
-        SocketAddr::V4(s) => (s.ip().octets(), u16_to_u8_2(&s.port())),
-        _ => panic!("IPV6 NOT CURRENTLY SUPPORTED")
-    }
 }
 
 #[derive(Debug)]
@@ -200,15 +194,15 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
     fn receive (&mut self, msg: Message<Key, Value>, src_addr: SocketAddr, a_sender: &Sender<AsyncAction>, node_id: NodeAddr) {
         match msg {
             Message::Ping => {
-                self.socket.send_to(&self.ping_ack(), src_addr);
+                let _ = self.socket.send_to(&self.ping_ack(), src_addr);
             },
             Message::FindNode(key) => {
                 let kclosest = self.find_k_closest(&key);
                 let response = self.find_node_resp(&kclosest, &key);
-                self.socket.send_to(&response, src_addr);
+                let _ = self.socket.send_to(&response, src_addr);
             },
             Message::FindVal(key) => {
-                self.socket.send_to(&(match self.data.get(&key) {
+                let _ = self.socket.send_to(&(match self.data.get(&key) {
                     None => self.find_node_resp(&self.find_k_closest(&key), &key),
                     Some(data) => self.find_val_resp(&key, data)
                 }), src_addr);
@@ -216,7 +210,7 @@ impl ReceiveMessage <Message<Key, Value>, AsyncAction> for KademliaNode {
             Message::Store(key, val) => {self.data.insert(key, val);},
             //Responses
             Message::FindNodeResp(key, node_vec) => {
-                a_sender.send(AsyncAction::LookupResults(key, node_vec, Some(node_id)));
+                let _ = a_sender.send(AsyncAction::LookupResults(key, node_vec, Some(node_id)));
             },
             Message::PingResp => {
                 //TODO: if this is an eviction candidate, do stuff such that it isn't evicted
@@ -281,7 +275,7 @@ impl AilmedakMachine {
             _ => panic!("unable to bind")
         };
 
-        let mut state = KademliaNode::new(
+        let state = KademliaNode::new(
             id_opt.unwrap_or_else(||KademliaNode::gen_new_id()),
             config.k_val.clone(),
             network_socket.try_clone().unwrap());
@@ -300,7 +294,7 @@ impl AilmedakMachine {
         let (m_tx, m_rx) = channel();
         let (a_tx, a_rx) = channel();
 
-        let proto_thread = Self::spawn_proto_thread(network_socket.try_clone().unwrap(), m_tx.clone());
+        let _ = Self::spawn_proto_thread(network_socket.try_clone().unwrap(), m_tx.clone());
         let cb_tx = match config {
             Config {api_port: Some(port_val), ..} => {
                 let (_, s) = spawn_api_thread(port_val, m_tx.clone());
@@ -312,15 +306,15 @@ impl AilmedakMachine {
             }
         };
 
-        let state_thread = Self::spawn_state_thread(state, m_rx, cb_tx, a_tx.clone());
+        let _ = Self::spawn_state_thread(state, m_rx, cb_tx, a_tx.clone());
 
         //alpha processor processes events that may be waiting on a future condition. performance
         //requirements are less stringent within this thread
-        let alpha_thread = Self::spawn_alpha_thread(ap, a_rx, a_tx.clone(), network_socket.try_clone().unwrap());
+        let _ = Self::spawn_alpha_thread(ap, a_rx, a_tx.clone(), network_socket.try_clone().unwrap());
 
         loop {
             thread::sleep_ms(config.async_poll_interval);
-            a_tx.send(AsyncAction::Awake);
+            let _ = a_tx.send(AsyncAction::Awake);
         }
     }
 
@@ -341,7 +335,7 @@ impl AilmedakMachine {
                                         println!("f");
                                         //if this node has an client api side, it will send the resolved key back to the api layer.
                                         //otherwise it will send a message down the channel that will just be discarded
-                                        to_api.send(Callback::Resolve(key, data.clone()));
+                                        let _ = to_api.send(Callback::Resolve(key, data.clone()));
                                     }
                                 }
                             },
@@ -358,7 +352,7 @@ impl AilmedakMachine {
                         match e_cand {
                             None => (),
                             Some(e_c) => {
-                                (&to_async).send(AsyncAction::SetEvictTimeout(e_c));
+                                let _ = (&to_async).send(AsyncAction::SetEvictTimeout(e_c));
                                 state.send_msg(&state.ping_msg(), ip_addr);
                             }
                         };
@@ -369,6 +363,7 @@ impl AilmedakMachine {
                         println!("[{}] |{:?}| <- {}", as_hex_string(state.id()), message, as_hex_string(&node_id));
 
                         let action = state.receive(message, ip_addr, &to_async, node_id);
+                        println!("action: {:?}", action);
                     }
 
                 }
@@ -380,7 +375,7 @@ impl AilmedakMachine {
     /// alpha thread attempts to asynchronous responses from other nodes and timeouts
     // TODO: make alpha_sock a Sender
     fn spawn_alpha_thread (ap: AlphaProcessor, a_rx: Receiver<AsyncAction>, a_tx_self: Sender<AsyncAction>, alpha_sock: UdpSocket) -> JoinHandle<()> {
-        let ALPHA_FACTOR = 4;
+        const ALPHA_FACTOR:usize = 4;
         thread::spawn(move|| {
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
             //It would probably be better to use a HashMap for highly concurrent api requests
@@ -398,9 +393,9 @@ impl AilmedakMachine {
                             //TODO: this needs to signal back to the k-buckets owner to update
                             println!("UNHANDLED");
                         }
-                        for f in find_out.iter() {
+                        /*for f in find_out.iter() {
                             
-                        }
+                        }*/
 
                     },
                     AsyncAction::SetEvictTimeout(ec) => {
@@ -424,14 +419,14 @@ impl AilmedakMachine {
                                     match is_lookup_finished!(ap.k_val, key_vec) {
                                         false => {
                                             Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
-                                                let (ref node_id, ref ip, ref port) = find_entry;
-                                                alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
+                                                let (_, ref ip, ref port) = find_entry;
+                                                let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
                                                 find_out.push((find_entry, get_time().sec+1));
                                             });
                                         },
                                         true => {
                                             println!("DONE");
-                                            a_tx_self.send(AsyncAction::Awake);
+                                            let _ = a_tx_self.send(AsyncAction::Awake);
                                             //signal that we're done
                                         }
                                     };
@@ -443,8 +438,8 @@ impl AilmedakMachine {
                             let mut new_entry = Vec::new();
                             Self::merge_into(&mut new_entry, &mut close_nodes, &key);
                             Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
-                                let (ref node_id, ref ip, ref port) = find_entry;
-                                alpha_sock.send_to(&ap.find_node_msg(&key), to_ip_port_pair(ip, port));
+                                let (_, ref ip, ref port) = find_entry;
+                                let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
                                 find_out.push((find_entry, get_time().sec+1));
                             });
                             lookup_qi.push((key, new_entry));
@@ -461,7 +456,9 @@ impl AilmedakMachine {
         thread::spawn(move|| {
             loop {
                 match receiver.wait_for_message() {
-                    Ok((message, node_id, address)) => {m_tx.send(MessageType::FromNode(message, node_id, address));},
+                    Ok((message, node_id, address)) => {
+                        let _ = m_tx.send(MessageType::FromNode(message, node_id, address));
+                    },
                     _ => ()
                 };
             }
@@ -495,7 +492,7 @@ impl AilmedakMachine {
             loop {
                 match (cand.peek(), present.peek()) {
                     (None, _)|(_, None) => break,
-                    (Some(&(c_i, &(c_id, _, _))), Some(&(p_i, &((p_id, _, _), ref color)))) => {
+                    (Some(&(c_i, &(c_id, _, _))), Some(&(_, &((p_id, _, _), ref color)))) => {
                         if c_id == p_id {
                             cand.next();
                             present.next();
@@ -523,10 +520,6 @@ impl AilmedakMachine {
         }
     }
 
-}
-
-fn to_ip_port_pair(ip: &[u8; 4], port: &u16) -> (Ipv4Addr, u16) {
-    (Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), *port)
 }
 
 struct AlphaProcessor {

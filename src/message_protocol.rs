@@ -3,6 +3,7 @@ use std::io::Result;
 use std::io::{Error, ErrorKind};
 use std::mem::transmute;
 use std::mem;
+use utils::{u8_2_to_u16, u8_4_to_u32};
 
 #[derive(Debug)]
 pub enum Message <K, V>{
@@ -67,8 +68,9 @@ pub trait ProtoMessage {
 
     fn store_msg (&self, key: &Key, val: &[u8]) -> Vec<u8> {
         let mut vec = Vec::with_capacity(key.len() + val.len() + 5);
-        let payload_size = (key.len() + val.len()) as u32;
+        let payload_size: [u8; 4] = unsafe{transmute(((key.len() + val.len()) as u32).to_be())};
         vec.extend([2].iter().chain(self.id().iter())
+                      .chain(payload_size.iter())
                       .chain(key.iter())
                       .chain(val.iter()));
         vec
@@ -188,21 +190,6 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
     Some((some_msg, node_id))
 }
 
-//this is relatively unsafe
-pub fn u8_2_to_u16 (bytes: &[u8]) -> u16 {
-    (bytes[1] as u16 | (bytes[0] as u16) << 8)
-}
-
-pub fn u8_4_to_u32 (bytes: &[u8]) -> u32 {
-    (bytes[3] as u32
-        | ((bytes[2] as u32) << 8)
-        | ((bytes[1] as u32) << 16)
-        | ((bytes[0] as u32) << 24))
-}
-
-pub fn u16_to_u8_2 (n: &u16) -> [u8; 2]{
-    unsafe{mem::transmute((*n).to_be())}
-}
 pub trait DSocket {
     fn wait_for_message (&mut self) -> Result<(Message<Key, Value>, Key, SocketAddr)>;
 }

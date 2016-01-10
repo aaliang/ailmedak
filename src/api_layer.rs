@@ -3,12 +3,12 @@ use std::thread::JoinHandle;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, channel};
 use std::net::{UdpSocket, SocketAddr};
-use message_protocol::u8_4_to_u32;
 use crypto::sha1::Sha1;
 use crypto::digest::Digest;
 use node::MessageType;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use utils::fmt::as_hex_string;
+use utils::u8_4_to_u32;
 
 #[derive(Debug)]
 pub enum ClientMessage {
@@ -35,7 +35,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
         println!("[STATUS] API LISTENING ON PORT <{}>", port);
         loop {
             let mut buf:[u8; 4096] = [0; 4096];
-            let (amt, src) = listener.recv_from(&mut buf).unwrap();
+            let (_, src) = listener.recv_from(&mut buf).unwrap();
             match buf.first() {
                 Some(&0) => { //this is a lookup type
                     let key_length = u8_4_to_u32(&buf[1..5]) as usize;
@@ -69,7 +69,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
     //there are a lot of threads going on. we could just do stuff from the state thread but at
     //least there's modularity this way
     let response_socket = bind.try_clone().unwrap();
-    let outbound_thread = thread::spawn(move || {
+    let _ = thread::spawn(move || {
         let mut req_map:HashMap<[u8; 20], Vec<SocketAddr>> = HashMap::new();
         loop {
             match rx.recv().unwrap() {
@@ -92,9 +92,6 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                 }
             }
         }
-
-        println!("state: {:?}", req_map);
-
     });
 
     (request_thread, tx_clone)

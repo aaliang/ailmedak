@@ -28,11 +28,6 @@ fn main () {
         None => DEFAULT_NETPORT
     };
 
-    /*let port = env::args().nth(1)
-        .unwrap()
-        .parse::<u16>()
-        .unwrap();*/
-    
     let api_port_opt = match matches.opt_str("a"){
         Some(s) => s.parse::<u16>().ok(),
         None => None
