@@ -3,17 +3,27 @@ use std::io::Result;
 use std::io::{Error, ErrorKind};
 use std::mem::transmute;
 use std::mem;
+use std::fmt;
+use std::fmt::{Formatter, Debug};
+use node::state::NodeAddr;
 use utils::{u8_2_to_u16, u8_4_to_u32};
+use utils::fmt::as_hex_string;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy)]
 pub struct NodeContact<K> {
     pub id: K,
     pub ip: [u8; 4],
     pub port: u16
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Message <K, V>{ 
+impl Debug for NodeContact<NodeAddr> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{{ id: {}, ip: {:?}, port: {} }}", as_hex_string(&self.id), &self.ip, &self.port)
+    }
+}
+
+#[derive(PartialEq)]
+pub enum Message <K, V> { 
     //out
     Ping,
     Store(K, V),
@@ -23,6 +33,30 @@ pub enum Message <K, V>{
     PingResp,
     FindNodeResp(K, Vec<NodeContact<K>>),
     FindValResp(K, V)
+}
+
+impl Debug for Message<NodeAddr, Vec<u8>> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            &Message::Ping => write!(f, "Ping"),
+            &Message::PingResp => write!(f, "PingResp"),
+            &Message::Store(ref k, ref v) => {
+                write!(f, "Store({}, {:?})", as_hex_string(k), v)
+            },
+            &Message::FindNode(ref k) => {
+                write!(f, "FindNode({})", as_hex_string(k))
+            },
+            &Message::FindNodeResp(ref a, ref b) => {
+                write!(f, "FindNodeResp({}, {:?})", as_hex_string(a), b)
+            },
+            &Message::FindVal(ref k) => {
+                write!(f, "FindVal({})", as_hex_string(k))
+            },
+            &Message::FindValResp(ref k, ref v) => {
+                write!(f, "FindValResp({}, {:?})", as_hex_string(k), v)
+            }
+        }
+    }
 }
 
 /*macro_rules! byte_envelope {
@@ -116,8 +150,6 @@ pub trait ProtoMessage {
 
     fn find_node_resp (&self, closest: &Vec<(Key, (Key, ([u8; 4], [u8; 2])))>, key: &Key) -> Vec<u8> {
         let payload_size = (mem::size_of::<Key>() + 6) * closest.len();
-        println!("psize {}", payload_size);
-        println!("klen: {}", key.len());
         let mut vec = Vec::with_capacity(payload_size + key.len() + 5 + 20);
         let bytes: [u8; 4] = unsafe {transmute(((payload_size + key.len()) as u32 ).to_be())};
         vec.extend(
@@ -178,17 +210,13 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
                 5 => { 
                     let key = key_cpy(&rest[0..*keysize]);
                     let nfield = &rest[*keysize..];
-                    println!("len {}", len);
                     let num_returned = (len-keysize)/26;
-                    println!("num_ret: {}", num_returned);
-                    println!("bytes: {:?}", bytes);
                     let result_vec = (0..num_returned).map(|n| {
                         let section = &nfield[n * (*keysize + 6)..];
                         let node_id = key_cpy(&section[0..*keysize]);
                         let ip_addr = ip_cpy(&section[*keysize..*keysize+4]);
                         let port = u8_2_to_u16(&section[*keysize+4..*keysize+6]);
                         NodeContact {id: node_id, ip: ip_addr, port: port}
-                        //(node_id, ip_addr, port)
                     }).collect::<Vec<NodeContact<Key>>>();
                     Message::FindNodeResp(key, result_vec)
                 },
@@ -212,7 +240,6 @@ impl DSocket for UdpSocket {
             match self.recv_from(&mut ibuf) {
                 Ok((0, _)) => return Err(Error::new(ErrorKind::Other, "graceful disconnect")),
                 Ok((num_read, addr)) => {
-                    println!("{:?}", &ibuf[0..num_read]);
                     match try_decode(&ibuf[0..num_read], &KEYSIZE) {
                         None => continue,
                         Some((msg, from_id)) => return Ok((msg, from_id, addr))

@@ -175,10 +175,9 @@ impl AilmedakMachine {
                                 match state.data.get(&key) {
                                     None => {
                                         state.find_k_closest_global(key, &to_async);
-                                        println!("need to node_lookup");
+                                        logger.log(&"starting node lookup".to_string());
                                     },
                                     Some(data) => {
-                                        println!("f");
                                         //if this node has an client api side, it will send the resolved key back to the api layer.
                                         //otherwise it will send a message down the channel that will just be discarded
                                         let _ = to_api.send(Callback::Resolve(key, data.clone()));
