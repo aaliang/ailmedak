@@ -8,7 +8,7 @@ use crypto::sha1::Sha1;
 use crypto::digest::Digest;
 use node::MessageType;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use fmt_utils::as_hex_string;
+use utils::fmt::as_hex_string;
 
 #[derive(Debug)]
 pub enum ClientMessage {

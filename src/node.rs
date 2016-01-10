@@ -4,7 +4,7 @@ use std::net::{UdpSocket, SocketAddr, ToSocketAddrs, Ipv4Addr};
 use std::collections::HashMap;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, u8_2_to_u16, u16_to_u8_2};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
-use fmt_utils::{as_hex_string};
+use utils::fmt::{as_hex_string};
 use config::Config;
 use time::get_time;
 
@@ -49,7 +49,7 @@ impl ASizedNode<u8> for KademliaNode {
 }
 
 /// Vanilla implementation of the state of a node, according to the Kademlia paper.
-/// provides facilities for retrieving, and putting into k-buckets (governed by distance)
+/// provides facilities for retrieving and putting into k-buckets (governed by distance)
 /// and returning the k closest known nodes (that are considered active) to a given id
 impl KademliaNode {
     pub fn new (id: NodeAddr, k_val: usize, write_socket: UdpSocket) -> KademliaNode {
