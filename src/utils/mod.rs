@@ -1,5 +1,6 @@
 pub mod fmt;
 pub mod networking;
+pub mod loggerator;
 
 use std::mem;
 

@@ -8,6 +8,7 @@ use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, NodeContact};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use utils::fmt::{as_hex_string};
 use utils::networking::{ip_port_pair};
+use utils::loggerator::Loggerator;
 use config::Config;
 use node::state::{NodeAddr, KademliaNode, ASizedNode};
 
@@ -129,9 +130,8 @@ impl AilmedakMachine {
             state.send_msg(&state.ping_msg(), as_ref);
         }
 
-        let hex_id = as_hex_string(state.id());
-
-        println!("[{}] NODE BIND CLUSTER PORT <{}>", hex_id, config.network_port);
+        let logger = Loggerator::new(state.id());
+        logger.log(&format!("NODE BIND CLUSTER PORT {}", config.network_port));
 
         let ap = AlphaProcessor {id: state.id().clone(), k_val: state.k_val.clone()};
 
@@ -166,6 +166,7 @@ impl AilmedakMachine {
     fn spawn_state_thread (mut state: KademliaNode,  rx: Receiver<MessageType>,  to_api: Sender<Callback>, to_async: Sender<AsyncAction>) -> JoinHandle<()> {
 
         thread::spawn(move|| {
+            let logger = Loggerator::new(state.id());
             loop {
                 match rx.recv().unwrap() {
                     MessageType::FromClient(message) => {
@@ -200,11 +201,8 @@ impl AilmedakMachine {
                                 state.send_msg(&state.ping_msg(), ip_addr);
                             }
                         };
-                        //println!("addr: {:?}", addr);
-                        //println!("them: {:?}", node_id);
-                        //println!("us: {:?}", state.my_id());
-                        //println!("diff: {:?}", &diff[..]);
-                        println!("[{}] |{:?}| <- {}", as_hex_string(state.id()), message, as_hex_string(&node_id));
+                        
+                        logger.logs(&message, &node_id);
 
                         let action = state.receive(message, ip_addr, &to_async, node_id);
                         println!("action: {:?}", action);
