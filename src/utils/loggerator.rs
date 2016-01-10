@@ -18,8 +18,8 @@ impl Loggerator {
         }
     }
 
-    pub fn log <T:Debug> (&self, message: &T) {
-        println!("[{}@{}] {:?}", self.id, Self::now_str(), message);
+    pub fn log <T:ToString> (&self, message: &T) {
+        println!("[{}@{}] {}", self.id, Self::now_str(), message.to_string());
     }
 
     pub fn logs <T: Debug> (&self, message: &T, source_id_bytes: &[u8]) {
@@ -32,7 +32,7 @@ impl Loggerator {
 
     fn now_str () -> String {
         let tm = time::now_utc();
-        time::strftime("%H:%M:%S.%f", &tm).unwrap()
+        time::strftime("%H:%m:%S.%f", &tm).unwrap()
     }
 
 }

@@ -3,7 +3,7 @@ use time::get_time;
 use std::thread;
 use std::thread::JoinHandle;
 use std::sync::mpsc::{Sender, Receiver, channel};
-
+use std::cmp::Ordering;
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, NodeContact};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use utils::fmt::{as_hex_string};
@@ -174,6 +174,7 @@ impl AilmedakMachine {
                             ClientMessage::Get(key) => {
                                 match state.data.get(&key) {
                                     None => {
+                                        state.find_k_closest_global(key, &to_async);
                                         println!("need to node_lookup");
                                     },
                                     Some(data) => {
@@ -205,7 +206,8 @@ impl AilmedakMachine {
                         logger.logs(&message, &node_id);
 
                         let action = state.receive(message, ip_addr, &to_async, node_id);
-                        println!("action: {:?}", action);
+                        let _ = action;
+                        //println!("action: {:?}", action);
                     }
 
                 }
@@ -249,22 +251,24 @@ impl AilmedakMachine {
                             let f_res = lookup_qi.iter_mut().find(|&&mut(k, _)| k == key);
                             match f_res {
                                 None => true,
-                                Some(&mut (ref a, ref mut key_vec)) => {
-                                    Self::merge_into(key_vec, &mut close_nodes, &key);
+                                Some(&mut (ref a, ref mut k_vec)) => {
+                                    Self::merge_into(k_vec, &mut close_nodes, &key);
                                     //unoptimized... set the from_id to black (visited)
                                     if let Some(fid) = from_id {
-                                        if let Some(&mut( _, ref mut color)) = key_vec.iter_mut().find(|&&mut(NodeContact{id: key,..}, _)| key == fid) {
+                                        if let Some(&mut( _, ref mut color)) = k_vec.iter_mut().find(|&&mut(NodeContact{id: key,..}, _)| key == fid) {
                                             *color = Color::Black;
                                         } // probably should have gone with a HM
                                         find_out.retain(|&(NodeContact{id: fe, ..}, _)| fe != fid);
                                     }
-                                    match is_lookup_finished!(ap.k_val, key_vec) {
+                                    match is_lookup_finished!(ap.k_val, k_vec) {
                                         false => {
-                                            Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
-                                                let NodeContact{ref ip, ref port, ..} = find_entry;
-                                                let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
-                                                find_out.push((find_entry, get_time().sec+1));
-                                            });
+                                            if find_out.len() < ALPHA_FACTOR {
+                                                Self::color(k_vec, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
+                                                    let NodeContact{ref ip, ref port, ..} = find_entry;
+                                                    let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
+                                                    find_out.push((find_entry, get_time().sec+1));
+                                                });
+                                            }
                                         },
                                         true => {
                                             println!("DONE");
@@ -316,22 +320,51 @@ impl AilmedakMachine {
                 &mut Color::White => {
                     *c = Color::Grey(get_time().sec + 1);
                     func(t);
-                    num_left -= 1;
                     if num_left == 0 {
                         break
                     }
+                    num_left -= 1;
                 },
                 _ => ()
             }
         }
     }
 
-    fn merge_into (into: &mut Vec<(NodeContact<Key>, Color)>, candidates: &mut Vec<NodeContact<Key>>, basis: &Key) {
+    //naive and unoptimized.
+    fn merge_into(into: &mut Vec<(NodeContact<Key>, Color)>, candidates: &mut Vec<NodeContact<Key>>, basis: &Key) {
+        let with_color = |c:&NodeContact<Key>| (c.to_owned(), Color::White);
+        //this find is terribly ineffecient
+        let iter = into.clone();
+        let not_in_into = |c: &&NodeContact<Key>| {
+            let f = iter.iter().find(|&&(ref contact, _)| {
+                contact == *c
+            });
+            if f == None {
+                true
+            } else {
+                false
+            }
+        };
+        into.extend(candidates.iter().filter(not_in_into).map(with_color));
+        into.sort_by(|a_tup, b_tup| {
+            let &(a, _) = a_tup;
+            let &(b, _) = b_tup;
+            match KademliaNode::cmp_dist_wrt(&a.id, &b.id, basis) {
+                _a if _a == Some(&a.id) => Ordering::Less,
+                _b if _b == Some(&b.id) => Ordering::Greater,
+                _ => Ordering::Equal
+            }
+        });
+    }
+
+    /*fn merge_into_b (into: &mut Vec<(NodeContact<Key>, Color)>, candidates: &mut Vec<NodeContact<Key>>, basis: &Key) {
         let mut list: Vec<Option<usize>> = vec![];
+        println!("int: {:?}", into);
         {
             let mut cand = candidates.iter().enumerate().peekable();
             let mut present = into.iter().enumerate().peekable();
             loop {
+                println!("looping");
                 match (cand.peek(), present.peek()) {
                     (None, _)|(_, None) => break,
                     (Some(&(c_i, &NodeContact{id: c_id, ..})), Some(&(_, &(NodeContact{id: p_id, ..}, ref color)))) => {
@@ -354,13 +387,19 @@ impl AilmedakMachine {
             }
             list.extend(cand.map(|_| Some(candidates.len())));
         }
+        println!("lst: {:?}", list);
         for (i, new_item) in list.iter().rev().zip(candidates.iter()) {
             match i {
-                &Some(index) => into.insert(index, (new_item.clone(), Color::White)),
+                &Some(index) => {
+                    let inserted = (new_item.clone(), Color::White);
+                    println!("intoLen: {}", into.len());
+                    println!("{} <@ {:?}", index, inserted);
+                    into.insert(index, inserted);
+                },
                 _ => ()
             };
         }
-    }
+    }*/
 
 }
 
@@ -377,7 +416,7 @@ impl ProtoMessage for AlphaProcessor {
 
 type FindEntry = (NodeAddr, [u8; 4], u16);
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 ///Colors a (kbucket) value representing its status in an arbitrary asynchronous lookup operation
 enum Color {
     Black, // Responded

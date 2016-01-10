@@ -178,7 +178,10 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
                 5 => { 
                     let key = key_cpy(&rest[0..*keysize]);
                     let nfield = &rest[*keysize..];
-                    let num_returned = (len-keysize)/keysize;
+                    println!("len {}", len);
+                    let num_returned = (len-keysize)/26;
+                    println!("num_ret: {}", num_returned);
+                    println!("bytes: {:?}", bytes);
                     let result_vec = (0..num_returned).map(|n| {
                         let section = &nfield[n * (*keysize + 6)..];
                         let node_id = key_cpy(&section[0..*keysize]);
@@ -209,7 +212,7 @@ impl DSocket for UdpSocket {
             match self.recv_from(&mut ibuf) {
                 Ok((0, _)) => return Err(Error::new(ErrorKind::Other, "graceful disconnect")),
                 Ok((num_read, addr)) => {
-                    //println!("{:?}", &ibuf[0..num_read]);
+                    println!("{:?}", &ibuf[0..num_read]);
                     match try_decode(&ibuf[0..num_read], &KEYSIZE) {
                         None => continue,
                         Some((msg, from_id)) => return Ok((msg, from_id, addr))

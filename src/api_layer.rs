@@ -45,7 +45,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                     let mut hash_key:[u8; 20] = [0; 20];
                     let _ = sha.result(&mut hash_key);
                     let _ = tx.send(Callback::Register(hash_key.clone(), src));
-                    println!("GETTING: {}", as_hex_string(&hash_key));
+                    println!("GETTING: Key({}) from {:?}", as_hex_string(&hash_key), src);
                     let _ = send.send(MessageType::FromClient(ClientMessage::Get(hash_key)));
                 },
                 Some(&1) => { //this is a store
@@ -58,7 +58,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                     let _ = sha.input(key);
                     let mut hash_key:[u8; 20] = [0; 20];
                     let _ = sha.result(&mut hash_key);
-                    println!("SETTING: {}", as_hex_string(&hash_key));
+                    println!("SETTING: Key({}) from {:?}", as_hex_string(&hash_key), src);
                     let _ = send.send(MessageType::FromClient(ClientMessage::Set(hash_key, val.to_owned())));
                 }
                 _ => ()
@@ -80,7 +80,7 @@ pub fn spawn_api_thread (port: u16, send: Sender<MessageType>) -> (JoinHandle<()
                     };
                     res.push(src);
                     //storing
-                    println!("recv {} from {:?}", as_hex_string(&key), src);
+                    //println!("recv {} from {:?}", as_hex_string(&key), src);
                 },
                 Callback::Resolve(key, val) => {
                     if let Some(vec) = req_map.remove(&key) {

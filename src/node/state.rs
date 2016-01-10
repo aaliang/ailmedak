@@ -65,6 +65,20 @@ macro_rules! meta_node {
                     _ => None
                 }
             }
+
+            /// Given two ids and a basis, returns an option over the id which is further from the
+            /// basis
+            fn cmp_wrt <'a> (a: &'a[T; $length], b: &'a[T; $length], basis: &'a[T; $length]) -> Option<&'a[T; $length]> {
+                let a_dist = Self::dist_as_bytes(basis, a);
+                let b_dist = Self::dist_as_bytes(basis, b);
+                match Self::cmp_dist(&a_dist, &b_dist) {
+                    Some(_a) if _a == &a_dist => Some(a),
+                    Some(_b) if _b == &b_dist => Some(b),
+                    _ => None
+                }
+            }
+
+
         }
     };
 }
