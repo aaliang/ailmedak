@@ -5,7 +5,7 @@ use std::sync::mpsc::{Sender, channel};
 use std::net::{UdpSocket, SocketAddr};
 use crypto::sha1::Sha1;
 use crypto::digest::Digest;
-use node::MessageType;
+use node::machine::MessageType;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use utils::fmt::as_hex_string;
 use utils::u8_4_to_u32;

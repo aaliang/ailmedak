@@ -1,6 +1,6 @@
 extern crate ailmedak;
 
-use ailmedak::node::{AilmedakMachine};
+use ailmedak::node::machine::{AilmedakMachine};
 use ailmedak::config::Config;
 
 use std::thread;

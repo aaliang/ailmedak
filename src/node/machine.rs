@@ -1,172 +1,22 @@
-use rand::{thread_rng, Rng, Rand};
-use std::mem;
-use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
-use std::collections::HashMap;
+use std::net::{UdpSocket, SocketAddr};
+use time::get_time;
+use std::thread;
+use std::thread::JoinHandle;
+use std::sync::mpsc::{Sender, Receiver, channel};
+
 use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, NodeContact};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use utils::fmt::{as_hex_string};
-use utils::networking::{ip_port_pair, ip_port_pair_bytes};
-use utils::{u8_2_to_u16};
+use utils::networking::{ip_port_pair};
 use config::Config;
-use time::get_time;
+use node::state::{NodeAddr, KademliaNode, ASizedNode};
 
-// TODO: the components within this file are prone for moving into sub modules
-// for a systems perspective, ignore the uninteresting distance metrics and go straight to
-// the Ailmedak Machine, which describes the roles of each worker operating around a node
-
-pub type NodeAddr = [u8; addr_spc!()];
-type BucketArray = [Vec<(NodeAddr, SocketAddr)>; addr_spc!() * 8 + 1];
-
-///Defines a trait called ASizedNode (using the meta_node template) using a fixed length array of
-///an arbitrary type as id (currently set to 20)
-meta_node!(ASizedNode (id_len = addr_spc!()));
-
-pub struct KademliaNode {
-    addr_id: NodeAddr,
-    buckets: BucketArray,
-    k_val: usize,
-    data: HashMap<Key, Vec<u8>>,
-    socket: UdpSocket
-}
-
-///Implements ProtoMessage so we can create Message envelopes
-impl ProtoMessage for KademliaNode {
-    fn id (&self) -> &NodeAddr {
-        &self.addr_id
-    }
-}
-
-///Concrete implementation using ASizedNode, uses exclusive or (XOR) as a distance metric
-impl ASizedNode<u8> for KademliaNode {
-    fn my_id (&self) -> &NodeAddr {
-        &self.addr_id
-    }
-    fn dist_as_bytes(a: &NodeAddr, b: &NodeAddr) -> NodeAddr {
-        let mut dist:NodeAddr = unsafe { mem::uninitialized() };
-        for (i, (_a, _b)) in a.iter().zip(b.iter()).enumerate() {
-            dist[i] = _a ^ _b;
-        }
-        dist
-    }
-}
-
-/// Vanilla implementation of the state of a node, according to the Kademlia paper.
-/// provides facilities for retrieving and putting into k-buckets (governed by distance)
-/// and returning the k closest known nodes (that are considered active) to a given id
-impl KademliaNode {
-    pub fn new (id: NodeAddr, k_val: usize, write_socket: UdpSocket) -> KademliaNode {
-        let mut buckets:BucketArray = unsafe {mem::uninitialized()};
-        for i in buckets.iter_mut() {
-            unsafe {::std::ptr::write(i, Vec::with_capacity(k_val)) };
-        }
-        KademliaNode {
-            addr_id: id,
-            buckets: buckets,
-            k_val: k_val,
-            data: HashMap::new(),
-            socket: write_socket
-        }
-    }
-
-    ///Returns the index of the k_bucket (within KademliaNode::buckets) that the given distance
-    ///belongs in
-    pub fn k_bucket_index (distance: &NodeAddr) -> usize {
-        //find the first index that is not all ones. note: this needs to be tested thoroughly
-        match distance.iter().enumerate().find(|&(_, byte_val)| *byte_val != 0) {
-            Some ((index, val)) => {
-                let push_macro = 8 * (distance.len() - index - 1);
-                let push_micro = 8 - (val.leading_zeros() as usize) - 1;
-                let comb_push = push_macro + push_micro;
-                comb_push
-            },
-            _ => 0
-        }
-    }
-
-    ///updates the k buckets to enforce least recently seen ordering
-    pub fn update_k_bucket (&mut self, k_index: usize, tup: (NodeAddr, SocketAddr)) -> Option<EvictionCandidate> {
-        let (node_id, _) = tup;
-        let mut k_bucket = &mut self.buckets[k_index];
-        let _ = k_bucket.retain(|&(n, _)| node_id != n);
-        if k_bucket.len() < self.k_val {
-            //add contact info if below threshold
-            k_bucket.push(tup);
-            None
-        } else {
-            //TODO: need to ping
-            let last_recently_seen = k_bucket.first().unwrap();
-
-            Some(EvictionCandidate{
-                new: tup,
-                old: last_recently_seen.to_owned()
-            })
-        }
-    }
-
-    ///Ailmedak's (naive) version of locate node
-    ///A vector of closest addresses of length {K factor} or {the total number of contacts} (whichever is smaller is) is
-    ///returned
-    fn find_k_closest_global(&self, target_node_id: Key, alpha_channel: &Sender<AsyncAction>) {
-        let local_closest = self.find_k_closest(&target_node_id).iter().map(|&(_, (node_id, (ip, port)))| {
-            NodeContact{id: node_id, ip: ip, port: u8_2_to_u16(&port)}
-        }).collect::<Vec<NodeContact<Key>>>();
-        //TODO: consider case where there are no contacts
-        let _ = alpha_channel.send(AsyncAction::LookupResults(target_node_id, local_closest, None));
-    }
-
-    /// finds locally, the k closest nodes to the target_node_id
-    fn find_k_closest (&self, target_node_id: &Key) -> Vec<(Key, (Key, ([u8; 4], [u8; 2])))> {
-        let ivec = Vec::with_capacity(self.k_val);
-        let fbuckets = self.buckets.iter().flat_map(|bucket| bucket.iter());
-
-        fbuckets.fold(ivec, |mut acc, c| {
-            let &(node_id, s_addr) = c;
-            let dist = Self::dist_as_bytes(&node_id, target_node_id);
-            let todo = {
-                //yields the first element that is greater than the current
-                //distance
-                let find_result = acc.iter().enumerate().find(|&(_, x)| {
-                    let &(i_dist, _) = x;
-                    match Self::cmp_dist(&i_dist, &dist) {
-                        a if a == Some(&i_dist) => true,
-                        _ => false
-                    }
-                });
-                match find_result {
-                    None => {
-                        if acc.len() >= self.k_val {
-                            None
-                        } else {
-                            Some(acc.len())
-                        }
-                    },
-                    Some((i, _)) => { Some(i) }
-                }
-            };
-            match todo {
-                Some(i) => {
-                    acc.insert(i, (dist, (node_id, ip_port_pair_bytes(s_addr))));
-                    if acc.len() > self.k_val {
-                        acc.pop();
-                    }
-                },
-                _ => ()
-            };
-            assert!(acc.len() <= self.k_val);
-            acc
-        })
-    }
-
-    pub fn send_msg <A:ToSocketAddrs> (&self, msg: &[u8], addr: A) {
-        let _ = self.socket.send_to(msg, addr);
-    }
-
-}
+const DEFAULT_TTL:i64 = 3; //timeout in seconds for a request
 
 #[derive(Debug)]
 pub struct EvictionCandidate {
-    old: (NodeAddr, SocketAddr),
-    new: (NodeAddr, SocketAddr)
+    pub old: (NodeAddr, SocketAddr),
+    pub new: (NodeAddr, SocketAddr)
 }
 
 #[derive(Debug)]
@@ -225,12 +75,6 @@ pub struct AilmedakMachine;
 pub trait Machine {
     fn start (&mut self, port: u16);
 }
-
-use std::thread;
-use std::thread::JoinHandle;
-use std::sync::mpsc::{Sender, Receiver, channel};
-
-const DEFAULT_TTL:i64 = 3;
 
 ///Returns true if a lookup can be considered finished
 ///TODO: need to also compensate for Yellow nodes (timedout ones)
@@ -419,7 +263,7 @@ impl AilmedakMachine {
                                     match is_lookup_finished!(ap.k_val, key_vec) {
                                         false => {
                                             Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
-                                                let NodeContact{ip: ref ip, port: ref port, ..} = find_entry;
+                                                let NodeContact{ref ip, ref port, ..} = find_entry;
                                                 let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
                                                 find_out.push((find_entry, get_time().sec+1));
                                             });
@@ -438,7 +282,7 @@ impl AilmedakMachine {
                             let mut new_entry = Vec::new();
                             Self::merge_into(&mut new_entry, &mut close_nodes, &key);
                             Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
-                                let NodeContact{ip: ref ip, port: ref port, ..} = find_entry;
+                                let NodeContact{ref ip, ref port, ..} = find_entry;
                                 let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
                                 find_out.push((find_entry, get_time().sec+1));
                             });

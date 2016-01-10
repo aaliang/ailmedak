@@ -1,7 +1,7 @@
 extern crate ailmedak;
 extern crate getopts;
 
-use ailmedak::node::{AilmedakMachine};
+use ailmedak::node::machine::{AilmedakMachine};
 use ailmedak::config::Config;
 use std::env;
 use getopts::Options;
