@@ -2,7 +2,7 @@
 
 extern crate ailmedak;
 
-use ailmedak::node::{NodeAddr, KademliaNode};
+use ailmedak::node::{KademliaNode};
 
 #[test]
 fn test_k_bucket_index_0() {

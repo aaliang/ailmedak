@@ -5,8 +5,15 @@ use std::mem::transmute;
 use std::mem;
 use utils::{u8_2_to_u16, u8_4_to_u32};
 
-#[derive(Debug)]
-pub enum Message <K, V>{
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct NodeContact<K> {
+    pub id: K,
+    pub ip: [u8; 4],
+    pub port: u16
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Message <K, V>{ 
     //out
     Ping,
     Store(K, V),
@@ -14,7 +21,7 @@ pub enum Message <K, V>{
     FindVal(K),
     //acks
     PingResp,
-    FindNodeResp(K, Vec<(K, [u8; 4], u16)>),
+    FindNodeResp(K, Vec<NodeContact<K>>),
     FindValResp(K, V)
 }
 
@@ -42,6 +49,12 @@ macro_rules! rec_env {
         $head.iter().chain(byte_envelope!($($x),*))
     }};
 }*/
+
+
+const KEYSIZE:usize = 20;
+
+pub type Key = [u8; 20];
+pub type Value = Vec<u8>;
 
 pub trait ProtoMessage {
     fn id (&self) -> &Key;
@@ -132,12 +145,6 @@ pub trait ProtoMessage {
 
 }
 
-
-const KEYSIZE:usize = 20;
-
-pub type Key = [u8; 20];
-pub type Value = Vec<u8>;
-
 fn key_cpy (key_addr: &[u8]) -> Key {
     let mut key: Key = [0; 20]; //for now hardcode... later use macros
     for (a, b) in key_addr.iter().zip(key.iter_mut()) {
@@ -177,8 +184,9 @@ pub fn try_decode <'a> (bytes: &'a [u8], keysize: &usize) -> Option<(Message<Key
                         let node_id = key_cpy(&section[0..*keysize]);
                         let ip_addr = ip_cpy(&section[*keysize..*keysize+4]);
                         let port = u8_2_to_u16(&section[*keysize+4..*keysize+6]);
-                        (node_id, ip_addr, port)
-                    }).collect::<Vec<([u8; 20], [u8; 4], u16)>>();
+                        NodeContact {id: node_id, ip: ip_addr, port: port}
+                        //(node_id, ip_addr, port)
+                    }).collect::<Vec<NodeContact<Key>>>();
                     Message::FindNodeResp(key, result_vec)
                 },
                 6 => Message::FindValResp(key_cpy(&rest[0..*keysize]), (&rest[*keysize..]).to_owned()),

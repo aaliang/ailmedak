@@ -1,8 +1,7 @@
 extern crate ailmedak;
 extern crate getopts;
 
-use ailmedak::node::{KademliaNode, ASizedNode, AilmedakMachine, Machine};
-use ailmedak::message_protocol::ProtoMessage;
+use ailmedak::node::{AilmedakMachine};
 use ailmedak::config::Config;
 use std::env;
 use getopts::Options;
@@ -11,7 +10,6 @@ const DEFAULT_NETPORT:u16 = 3000;
 
 fn main () {
     let args: Vec<String> = env::args().collect();
-    let program = args[0].clone();
 
     let mut opts = Options::new();
 

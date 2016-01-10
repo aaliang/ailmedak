@@ -2,7 +2,7 @@ use rand::{thread_rng, Rng, Rand};
 use std::mem;
 use std::net::{UdpSocket, SocketAddr, ToSocketAddrs};
 use std::collections::HashMap;
-use message_protocol::{DSocket, Message, Key, Value, ProtoMessage};
+use message_protocol::{DSocket, Message, Key, Value, ProtoMessage, NodeContact};
 use api_layer::{spawn_api_thread, ClientMessage, Callback};
 use utils::fmt::{as_hex_string};
 use utils::networking::{ip_port_pair, ip_port_pair_bytes};
@@ -108,8 +108,8 @@ impl KademliaNode {
     ///returned
     fn find_k_closest_global(&self, target_node_id: Key, alpha_channel: &Sender<AsyncAction>) {
         let local_closest = self.find_k_closest(&target_node_id).iter().map(|&(_, (node_id, (ip, port)))| {
-            (node_id, ip, u8_2_to_u16(&port))
-        }).collect::<Vec<(Key, [u8; 4], u16)>>();
+            NodeContact{id: node_id, ip: ip, port: u8_2_to_u16(&port)}
+        }).collect::<Vec<NodeContact<Key>>>();
         //TODO: consider case where there are no contacts
         let _ = alpha_channel.send(AsyncAction::LookupResults(target_node_id, local_closest, None));
     }
@@ -175,7 +175,7 @@ pub enum AsyncAction {
     SetEvictTimeout(EvictionCandidate),
     // the key producing these results, contact information for these results, and the nodeid from
     // the source (none if the source is the resident node)
-    LookupResults(Key, Vec<(Key, [u8; 4], u16)>, Option<Key>)
+    LookupResults(Key, Vec<NodeContact<Key>>, Option<Key>)
     //PingResp(),
 
 }
@@ -380,8 +380,8 @@ impl AilmedakMachine {
             let mut timeoutbuf:Vec<(EvictionCandidate, i64)> = Vec::new();
             //It would probably be better to use a HashMap for highly concurrent api requests
             //but for now focus on lower latency in small batches. maybe make this configurable
-            let mut lookup_qi: Vec<(Key, Vec<(FindEntry, Color)>)> = Vec::new();
-            let mut find_out:Vec<(FindEntry, i64)> = Vec::new();
+            let mut lookup_qi: Vec<(Key, Vec<(NodeContact<Key>, Color)>)> = Vec::new();
+            let mut find_out:Vec<(NodeContact<Key>, i64)> = Vec::new();
             loop {
                 match a_rx.recv().unwrap() {
                     AsyncAction::Awake => {
@@ -411,15 +411,15 @@ impl AilmedakMachine {
                                     Self::merge_into(key_vec, &mut close_nodes, &key);
                                     //unoptimized... set the from_id to black (visited)
                                     if let Some(fid) = from_id {
-                                        if let Some(&mut( _, ref mut color)) = key_vec.iter_mut().find(|&&mut((key, _, _), _)| key == fid) {
+                                        if let Some(&mut( _, ref mut color)) = key_vec.iter_mut().find(|&&mut(NodeContact{id: key,..}, _)| key == fid) {
                                             *color = Color::Black;
                                         } // probably should have gone with a HM
-                                        find_out.retain(|&((fe, _, _), _)| fe != fid);
+                                        find_out.retain(|&(NodeContact{id: fe, ..}, _)| fe != fid);
                                     }
                                     match is_lookup_finished!(ap.k_val, key_vec) {
                                         false => {
                                             Self::color(key_vec, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
-                                                let (_, ref ip, ref port) = find_entry;
+                                                let NodeContact{ip: ref ip, port: ref port, ..} = find_entry;
                                                 let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
                                                 find_out.push((find_entry, get_time().sec+1));
                                             });
@@ -438,7 +438,7 @@ impl AilmedakMachine {
                             let mut new_entry = Vec::new();
                             Self::merge_into(&mut new_entry, &mut close_nodes, &key);
                             Self::color(&mut new_entry, ALPHA_FACTOR - find_out.len(), |&mut find_entry| {
-                                let (_, ref ip, ref port) = find_entry;
+                                let NodeContact{ip: ref ip, port: ref port, ..} = find_entry;
                                 let _ = alpha_sock.send_to(&ap.find_node_msg(&key), ip_port_pair(ip, port));
                                 find_out.push((find_entry, get_time().sec+1));
                             });
@@ -484,7 +484,7 @@ impl AilmedakMachine {
         }
     }
 
-    fn merge_into (into: &mut Vec<(FindEntry, Color)>, candidates: &mut Vec<FindEntry>, basis: &Key) {
+    fn merge_into (into: &mut Vec<(NodeContact<Key>, Color)>, candidates: &mut Vec<NodeContact<Key>>, basis: &Key) {
         let mut list: Vec<Option<usize>> = vec![];
         {
             let mut cand = candidates.iter().enumerate().peekable();
@@ -492,7 +492,7 @@ impl AilmedakMachine {
             loop {
                 match (cand.peek(), present.peek()) {
                     (None, _)|(_, None) => break,
-                    (Some(&(c_i, &(c_id, _, _))), Some(&(_, &((p_id, _, _), ref color)))) => {
+                    (Some(&(c_i, &NodeContact{id: c_id, ..})), Some(&(_, &(NodeContact{id: p_id, ..}, ref color)))) => {
                         if c_id == p_id {
                             cand.next();
                             present.next();

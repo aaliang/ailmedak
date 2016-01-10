@@ -39,9 +39,9 @@ fn main () {
 
             msg.extend(len_as_bytes.iter().chain(key_as_bytes.iter()));
             let addr_ref:&str = addr.as_ref();
-            sock.send_to(&msg, addr_ref);
+            let _ = sock.send_to(&msg, addr_ref);
 
-            handle.join();
+            let _ = handle.join();
         },
         "set" => {
             let key = env::args().nth(2).unwrap();
@@ -69,7 +69,7 @@ fn main () {
                                        .chain(val_as_bytes.iter()));
 
             let addr_ref:&str = addr.as_ref();
-            sock.send_to(&msg, addr_ref);
+            let _ = sock.send_to(&msg, addr_ref);
         },
         _ => {
             println!("invalid usage");
